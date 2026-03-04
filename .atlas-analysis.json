@@ -1,0 +1,98 @@
+{
+  "projectType": "saas",
+  "projectName": "Watch N Chill",
+  "projectDescription": "Real-time YouTube watch parties with synchronized playback, chat, and host controls",
+  "theme": "palm",
+  "primaryColor": "#040404",
+  "lightColor": null,
+  "darkColor": null,
+  "navigation": {
+    "tabs": [
+      {
+        "tab": "Documentation",
+        "groups": [
+          {
+            "group": "Get Started",
+            "pages": [
+              "introduction",
+              "quickstart"
+            ]
+          },
+          {
+            "group": "Core Features",
+            "pages": [
+              "features/synchronized-playback",
+              "features/room-system",
+              "features/real-time-chat",
+              "features/host-controls"
+            ]
+          },
+          {
+            "group": "Deployment",
+            "pages": [
+              "deployment/environment-variables",
+              "deployment/local-development",
+              "deployment/docker",
+              "deployment/production"
+            ]
+          },
+          {
+            "group": "Architecture",
+            "pages": [
+              "architecture/overview",
+              "architecture/backend",
+              "architecture/frontend",
+              "architecture/real-time-sync"
+            ]
+          }
+        ]
+      },
+      {
+        "tab": "API Reference",
+        "groups": [
+          {
+            "group": "Socket.IO Events",
+            "pages": [
+              "api/room-events",
+              "api/video-events",
+              "api/chat-events"
+            ]
+          },
+          {
+            "group": "Client Hooks",
+            "pages": [
+              "api/hooks/use-room",
+              "api/hooks/use-video-sync",
+              "api/hooks/use-create-room",
+              "api/hooks/use-join-room"
+            ]
+          },
+          {
+            "group": "Backend Services",
+            "pages": [
+              "api/services/redis",
+              "api/services/rate-limiting"
+            ]
+          }
+        ]
+      }
+    ]
+  },
+  "keyFeatures": [
+    "Synchronized YouTube video playback across all users",
+    "Real-time chat with typing indicators and message history",
+    "Host-controlled room management with guest promotion",
+    "Automatic room cleanup when all hosts leave",
+    "Redis-backed persistence for rooms and chat",
+    "Rate limiting for both HTTP and Socket.IO connections",
+    "Docker and Docker Compose support for easy deployment"
+  ],
+  "publicApiSurface": [
+    "Room Events: create-room, join-room, leave-room, promote-host",
+    "Video Events: set-video, play-video, pause-video, seek-video, sync-check",
+    "Chat Events: send-message, typing-start, typing-stop",
+    "Client Hooks: useRoom, useVideoSync, useCreateRoom, useJoinRoom, useSocket",
+    "Redis Services: RoomRepository, ChatRepository, RedisService",
+    "Custom Server: server.ts with Next.js + Socket.IO integration"
+  ]
+}
