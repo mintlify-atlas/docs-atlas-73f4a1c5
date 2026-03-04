@@ -76,10 +76,12 @@
           {
             "group": "Client Hooks",
             "pages": [
+              "api/hooks/use-socket",
               "api/hooks/use-room",
               "api/hooks/use-video-sync",
               "api/hooks/use-create-room",
-              "api/hooks/use-join-room"
+              "api/hooks/use-join-room",
+              "api/hooks/use-fullscreen-chat-overlay"
             ]
           },
           {

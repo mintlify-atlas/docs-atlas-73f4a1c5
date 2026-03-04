@@ -1,0 +1,175 @@
+---
+title: useSocket
+description: Access the Socket.IO client connection and connection state
+---
+
+## Overview
+
+The `useSocket` hook provides access to the Socket.IO client instance and connection state. This is a foundational hook that other hooks use to communicate with the server.
+
+## Usage
+
+```typescript
+import { useSocket } from '@/hooks/use-socket';
+
+function MyComponent() {
+  const { socket, isConnected, isInitialized } = useSocket();
+  
+  // Use socket to emit events or listen to responses
+}
+```
+
+## Return Value
+
+The hook returns an object with the following properties:
+
+<ResponseField name="socket" type="Socket | null">
+  The Socket.IO client instance. Will be `null` until initialized. Once connected, you can use this to emit events and listen for server responses.
+  
+  ```typescript
+  // Example: Emit an event
+  socket?.emit('join-room', { roomId: 'ABC123', userName: 'John' });
+  
+  // Example: Listen for events
+  socket?.on('room-joined', (data) => {
+    console.log('Joined room:', data.room.id);
+  });
+  ```
+</ResponseField>
+
+<ResponseField name="isConnected" type="boolean">
+  Whether the socket is currently connected to the server. Use this to show connection status or disable features when disconnected.
+  
+  ```typescript
+  {isConnected ? (
+    <span className="text-green-500">Connected</span>
+  ) : (
+    <span className="text-red-500">Disconnected</span>
+  )}
+  ```
+</ResponseField>
+
+<ResponseField name="isInitialized" type="boolean">
+  Whether the socket has been initialized. This becomes `true` once the SocketProvider mounts on the client side.
+</ResponseField>
+
+## Implementation Details
+
+The `useSocket` hook is a simple wrapper around React Context:
+
+```typescript src/hooks/use-socket.ts
+export function useSocket() {
+  return useSocketContext();
+}
+```
+
+The actual Socket.IO instance is managed by the `SocketProvider` context provider, which:
+
+1. Creates a Socket.IO client connection to `/api/socket/io`
+2. Manages connection state (connected/disconnected)
+3. Handles automatic reconnection
+4. Provides the socket instance to all child components
+
+## Socket Configuration
+
+The socket is configured with these settings:
+
+```typescript src/contexts/socket-provider.tsx:46-50
+const socketInstance = io(socketUrl, {
+  path: '/api/socket/io',
+  transports: ['websocket', 'polling'],
+  autoConnect: true,
+});
+```
+
+- **path**: Custom Socket.IO server path
+- **transports**: Prefer WebSocket, fall back to polling
+- **autoConnect**: Automatically connect when created
+
+## Socket Provider Setup
+
+The `useSocket` hook must be used within a `SocketProvider`. Watch N Chill sets this up in the root layout:
+
+```typescript src/app/layout.tsx
+import { SocketProvider } from '@/contexts/socket-provider';
+
+export default function RootLayout({ children }) {
+  return (
+    <html>
+      <body>
+        <SocketProvider>
+          {children}
+        </SocketProvider>
+      </body>
+    </html>
+  );
+}
+```
+
+<Warning>
+  If you call `useSocket` outside of a `SocketProvider`, it will throw an error: "useSocket must be used within a SocketProvider"
+</Warning>
+
+## Connection Lifecycle
+
+The socket goes through these states:
+
+1. **Not initialized** (`isInitialized: false`, `socket: null`) - Before SocketProvider mounts
+2. **Initialized, connecting** (`isInitialized: true`, `isConnected: false`, `socket: Socket`) - Socket created, attempting connection
+3. **Connected** (`isInitialized: true`, `isConnected: true`, `socket: Socket`) - Successfully connected to server
+4. **Disconnected** (`isInitialized: true`, `isConnected: false`, `socket: Socket`) - Connection lost, will auto-reconnect
+
+## Example: Custom Event Listener
+
+```typescript
+import { useSocket } from '@/hooks/use-socket';
+import { useEffect, useState } from 'react';
+
+function RoomStatus() {
+  const { socket, isConnected } = useSocket();
+  const [userCount, setUserCount] = useState(0);
+  
+  useEffect(() => {
+    if (!socket) return;
+    
+    // Listen for user count updates
+    socket.on('user-count-changed', ({ count }) => {
+      setUserCount(count);
+    });
+    
+    // Cleanup listener on unmount
+    return () => {
+      socket.off('user-count-changed');
+    };
+  }, [socket]);
+  
+  if (!isConnected) {
+    return <div>Connecting...</div>;
+  }
+  
+  return <div>{userCount} users in room</div>;
+}
+```
+
+## Related Hooks
+
+- [useRoom](/api/hooks/use-room) - Built on useSocket, manages room state and membership
+- [useVideoSync](/api/hooks/use-video-sync) - Built on useSocket, handles video synchronization
+- [useCreateRoom](/api/hooks/use-create-room) - Uses useSocket to create rooms
+- [useJoinRoom](/api/hooks/use-join-room) - Uses useSocket to join rooms
+
+## Socket.IO Events
+
+See the Socket.IO Events documentation for all available events:
+
+<CardGroup cols={3}>
+  <Card title="Room Events" icon="door-open" href="/api/room-events">
+    Create, join, and manage rooms
+  </Card>
+  <Card title="Video Events" icon="video" href="/api/video-events">
+    Control synchronized video playback
+  </Card>
+  <Card title="Chat Events" icon="comments" href="/api/chat-events">
+    Send messages and typing indicators
+  </Card>
+</CardGroup>

@@ -1,0 +1,274 @@
+---
+title: useFullscreenChatOverlay
+description: Manage chat overlay visibility in fullscreen video mode
+---
+
+## Overview
+
+The `useFullscreenChatOverlay` hook manages the chat overlay that appears when the video player enters fullscreen mode. It automatically shows the chat when entering fullscreen and hides it when exiting.
+
+## Usage
+
+```typescript
+import { useFullscreenChatOverlay } from '@/hooks/use-fullscreen-chat-overlay';
+
+function RoomPage() {
+  const {
+    isFullscreen,
+    showChatOverlay,
+    isChatMinimized,
+    toggleChatMinimize,
+    closeChatOverlay,
+    showChatOverlayManually
+  } = useFullscreenChatOverlay();
+  
+  return (
+    <div>
+      <VideoPlayer />
+      {showChatOverlay && (
+        <ChatOverlay
+          isMinimized={isChatMinimized}
+          onMinimize={toggleChatMinimize}
+          onClose={closeChatOverlay}
+        />
+      )}
+    </div>
+  );
+}
+```
+
+## Return Value
+
+<ResponseField name="isFullscreen" type="boolean">
+  Whether the page is currently in fullscreen mode. Tracks browser fullscreen API state.
+</ResponseField>
+
+<ResponseField name="showChatOverlay" type="boolean">
+  Whether the chat overlay should be visible. Automatically set to `true` when entering fullscreen.
+</ResponseField>
+
+<ResponseField name="isChatMinimized" type="boolean">
+  Whether the chat overlay is minimized. When minimized, only the chat header is visible.
+</ResponseField>
+
+<ResponseField name="toggleChatMinimize" type="() => void">
+  Toggles the chat overlay between minimized and expanded states.
+  
+  ```typescript
+  <button onClick={toggleChatMinimize}>
+    {isChatMinimized ? 'Expand' : 'Minimize'}
+  </button>
+  ```
+</ResponseField>
+
+<ResponseField name="closeChatOverlay" type="() => void">
+  Closes the chat overlay completely. User can reopen it with `showChatOverlayManually`.
+  
+  ```typescript
+  <button onClick={closeChatOverlay}>Close Chat</button>
+  ```
+</ResponseField>
+
+<ResponseField name="showChatOverlayManually" type="() => void">
+  Manually shows the chat overlay. Useful for reopening after closing, or showing chat without entering fullscreen.
+  
+  ```typescript
+  <button onClick={showChatOverlayManually}>Open Chat</button>
+  ```
+</ResponseField>
+
+## Behavior
+
+### Automatic Fullscreen Detection
+
+The hook automatically detects fullscreen state changes using the Fullscreen API:
+
+```typescript src/hooks/use-fullscreen-chat-overlay.ts:11-33
+useEffect(() => {
+  const handleFullscreenChange = () => {
+    const isCurrentlyFullscreen = !!(
+      document.fullscreenElement ||
+      document.webkitFullscreenElement ||
+      document.msFullscreenElement
+    );
+
+    setIsFullscreen(isCurrentlyFullscreen);
+
+    if (isCurrentlyFullscreen) {
+      setShowChatOverlay(true);
+      setIsChatMinimized(false);
+    } else {
+      setShowChatOverlay(false);
+      setIsChatMinimized(false);
+    }
+  };
+
+  document.addEventListener('fullscreenchange', handleFullscreenChange);
+  document.addEventListener('webkitfullscreenchange', handleFullscreenChange);
+  document.addEventListener('msfullscreenchange', handleFullscreenChange);
+  // ...
+});
+```
+
+The hook listens for:
+- `fullscreenchange` (standard)
+- `webkitfullscreenchange` (Safari, older Chrome)
+- `msfullscreenchange` (Internet Explorer/Edge)
+
+### State Transitions
+
+<Steps>
+  <Step title="Entering fullscreen">
+    When the video player enters fullscreen:
+    - `isFullscreen` → `true`
+    - `showChatOverlay` → `true`
+    - `isChatMinimized` → `false`
+    
+    The chat overlay appears in expanded state.
+  </Step>
+  
+  <Step title="User minimizes chat">
+    User clicks minimize button:
+    - `isChatMinimized` → `true`
+    
+    Chat collapses to header only.
+  </Step>
+  
+  <Step title="User closes chat">
+    User clicks close button:
+    - `showChatOverlay` → `false`
+    
+    Chat overlay disappears completely.
+  </Step>
+  
+  <Step title="Exiting fullscreen">
+    When the video player exits fullscreen:
+    - `isFullscreen` → `false`
+    - `showChatOverlay` → `false`
+    - `isChatMinimized` → `false`
+    
+    Chat overlay hides automatically.
+  </Step>
+</Steps>
+
+## Example: Complete Chat Overlay
+
+```typescript
+import { useFullscreenChatOverlay } from '@/hooks/use-fullscreen-chat-overlay';
+import { AnimatePresence, motion } from 'framer-motion';
+
+function ChatOverlay() {
+  const {
+    showChatOverlay,
+    isChatMinimized,
+    toggleChatMinimize,
+    closeChatOverlay,
+  } = useFullscreenChatOverlay();
+  
+  return (
+    <AnimatePresence>
+      {showChatOverlay && (
+        <motion.div
+          initial={{ x: 300, opacity: 0 }}
+          animate={{ x: 0, opacity: 1 }}
+          exit={{ x: 300, opacity: 0 }}
+          className="fixed right-0 top-0 bottom-0 w-80 bg-white dark:bg-gray-900 shadow-lg z-50"
+        >
+          {/* Chat header */}
+          <div className="flex items-center justify-between p-4 border-b">
+            <h3>Chat</h3>
+            <div className="flex gap-2">
+              <button onClick={toggleChatMinimize}>
+                {isChatMinimized ? '▲' : '▼'}
+              </button>
+              <button onClick={closeChatOverlay}>✕</button>
+            </div>
+          </div>
+          
+          {/* Chat content - hidden when minimized */}
+          {!isChatMinimized && (
+            <div className="flex-1 overflow-auto p-4">
+              {/* Messages */}
+            </div>
+          )}
+        </motion.div>
+      )}
+    </AnimatePresence>
+  );
+}
+```
+
+## Browser Compatibility
+
+The hook supports multiple fullscreen API implementations:
+
+| Browser | API Support |
+|---------|-------------|
+| Chrome 71+ | `fullscreenElement` |
+| Safari 6+ | `webkitFullscreenElement` |
+| Firefox 64+ | `fullscreenElement` |
+| Edge 79+ | `fullscreenElement` |
+| IE 11 | `msFullscreenElement` |
+
+<Note>
+  The hook automatically detects which API is available and uses the appropriate one.
+</Note>
+
+## Common Use Cases
+
+<AccordionGroup>
+  <Accordion title="Manual chat toggle button">
+    Add a button to show chat overlay without entering fullscreen:
+    
+    ```typescript
+    const { showChatOverlayManually } = useFullscreenChatOverlay();
+    
+    <button onClick={showChatOverlayManually}>
+      Open Chat Overlay
+    </button>
+    ```
+  </Accordion>
+  
+  <Accordion title="Conditional UI based on fullscreen">
+    Show different UI elements based on fullscreen state:
+    
+    ```typescript
+    const { isFullscreen } = useFullscreenChatOverlay();
+    
+    {isFullscreen ? (
+      <FullscreenControls />
+    ) : (
+      <NormalControls />
+    )}
+    ```
+  </Accordion>
+  
+  <Accordion title="Persist chat minimize state">
+    Remember user's preference for minimized state:
+    
+    ```typescript
+    const { isChatMinimized, toggleChatMinimize } = useFullscreenChatOverlay();
+    
+    useEffect(() => {
+      localStorage.setItem('chatMinimized', isChatMinimized.toString());
+    }, [isChatMinimized]);
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## Related Components
+
+- **ChatOverlay** - The actual overlay component that uses this hook
+- **VideoPlayer** - Controls fullscreen mode that triggers the overlay
+- **RoomPage** - Coordinates both video and chat overlays
+
+## Related Hooks
+
+<CardGroup cols={2}>
+  <Card title="useRoom" icon="users" href="/api/hooks/use-room">
+    Manage room state and chat messages
+  </Card>
+  <Card title="useVideoSync" icon="video" href="/api/hooks/use-video-sync">
+    Control video playback in fullscreen
+  </Card>
+</CardGroup>
