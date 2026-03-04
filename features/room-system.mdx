@@ -1,0 +1,352 @@
+---
+title: Room System
+description: Create and manage watch party rooms with automatic cleanup and Redis persistence
+icon: "door-open"
+---
+
+Watch N Chill's room system allows you to create private watch party spaces where you and your friends can watch videos together. Each room has a unique 6-character ID and persists for 24 hours.
+
+## Creating a Room
+
+Creating a room is simple and requires only your name:
+
+<Steps>
+  <Step title="Navigate to Home">
+    Go to the Watch N Chill homepage and locate the "Create Room" button.
+  </Step>
+  
+  <Step title="Enter Your Name">
+    Provide a display name (2-50 characters). This will be shown to other participants.
+    
+    <Note>
+    Names can contain letters, numbers, spaces, and basic punctuation (- _ . ! ?)
+    </Note>
+  </Step>
+  
+  <Step title="Room Generated">
+    The system generates a unique 6-character room ID (e.g., `A3X9K2`). This ID is:
+    - **Random**: Generated using base36 encoding for maximum randomness
+    - **Uppercase**: Easier to read and share
+    - **Unique**: Collision-resistant across the platform
+  </Step>
+  
+  <Step title="Become Host">
+    You're automatically designated as the room host with full control privileges and a secret host token.
+  </Step>
+</Steps>
+
+### Host Token
+
+When you create a room, you receive a secret host token:
+
+<Warning>
+The host token is stored in your browser's session storage. If you clear your browser data or use a different device, you'll lose host privileges. Keep your session active to maintain control.
+</Warning>
+
+- **Purpose**: Authenticates you as the original room creator
+- **Storage**: Session storage (cleared when tab closes)
+- **Security**: Required to rejoin as host if you leave and return
+
+## Joining a Room
+
+Guests can join existing rooms in two ways:
+
+<Tabs>
+  <Tab title="Via Room ID">
+    <Steps>
+      <Step title="Enter Room ID">
+        On the homepage, click "Join Room" and enter the 6-character room ID.
+      </Step>
+      
+      <Step title="Provide Name">
+        Enter your display name (2-50 characters).
+        
+        <Warning>
+        You cannot use a name that's already taken in the room. Choose something unique!
+        </Warning>
+      </Step>
+      
+      <Step title="Join as Guest">
+        You're added to the room as a guest with viewing and chat privileges.
+      </Step>
+    </Steps>
+  </Tab>
+  
+  <Tab title="Via Direct Link">
+    <Steps>
+      <Step title="Click Link">
+        Use a shared link like `https://watchnchill.app/room/A3X9K2`.
+      </Step>
+      
+      <Step title="Prompt for Name">
+        If you haven't previously joined, you'll be prompted for your name.
+      </Step>
+      
+      <Step title="Auto-Join">
+        You're automatically added to the room as a guest.
+      </Step>
+    </Steps>
+  </Tab>
+</Tabs>
+
+### Name Validation
+
+Names must meet these requirements:
+
+- **Length**: 2-50 characters
+- **Characters**: Letters, numbers, spaces, and `- _ . ! ?`
+- **Uniqueness**: Not already taken by another participant
+- **Not Reserved**: Cannot use the host's name unless you have the host token
+
+<Tip>
+If someone leaves the room, their name becomes available again for new joiners.
+</Tip>
+
+## Room Roles
+
+Each room has two types of participants:
+
+<CardGroup cols={2}>
+  <Card title="Host" icon="crown">
+    **Privileges:**
+    - Control video playback (play, pause, seek)
+    - Change videos
+    - Promote guests to host
+    - Send chat messages
+    
+    **Notes:**
+    - Multiple hosts are supported
+    - Original creator has host token for re-entry
+  </Card>
+  
+  <Card title="Guest" icon="user">
+    **Privileges:**
+    - View synchronized video
+    - Send chat messages
+    - See typing indicators
+    
+    **Limitations:**
+    - Cannot control playback
+    - Cannot change videos
+    - Can request promotion from hosts
+  </Card>
+</CardGroup>
+
+## Room Persistence
+
+Rooms are stored in Redis with automatic expiration:
+
+### Storage Details
+
+<AccordionGroup>
+  <Accordion title="Redis Schema">
+    Each room is stored as a JSON object with a key pattern:
+    
+    ```
+    room:{roomId}
+    ```
+    
+    The room object contains:
+    - `id`: Room ID
+    - `hostId`: Current primary host's user ID
+    - `hostName`: Original creator's name
+    - `hostToken`: Secret token for host re-authentication
+    - `videoType`: Current video type ("youtube" or null)
+    - `videoUrl`: Current video URL (if set)
+    - `videoState`: Playback state (time, playing status, duration)
+    - `users`: Array of current participants
+    - `createdAt`: Room creation timestamp
+  </Accordion>
+  
+  <Accordion title="Active Rooms Set">
+    A Redis set tracks all active rooms:
+    
+    ```
+    active-rooms
+    ```
+    
+    This allows efficient cleanup and room enumeration.
+  </Accordion>
+</AccordionGroup>
+
+### Expiration
+
+<Note>
+Rooms automatically expire after 24 hours (86,400 seconds). This TTL is refreshed on every room update.
+</Note>
+
+- **Time-to-Live**: 24 hours from creation or last update
+- **Auto-Cleanup**: Redis automatically removes expired keys
+- **Grace Period**: No grace period - after 24 hours, the room is gone
+
+## Room Closure
+
+Rooms can close in two scenarios:
+
+### Last Host Leaves
+
+When the final host leaves or disconnects:
+
+<Steps>
+  <Step title="Detection">
+    The system detects that no hosts remain in the user list.
+  </Step>
+  
+  <Step title="Notification">
+    All remaining guests receive a "room-error" event:
+    
+    ```json
+    {
+      "error": "All hosts have left the room. Redirecting to home page..."
+    }
+    ```
+  </Step>
+  
+  <Step title="Deletion">
+    The room is immediately deleted from Redis, including all state and chat history.
+  </Step>
+  
+  <Step title="Redirect">
+    Guests are automatically redirected to the homepage after a 1.5-second delay.
+  </Step>
+</Steps>
+
+<Warning>
+**Room Closure is Immediate**
+
+When all hosts leave, the room closes instantly. There's no "host migration" - if you want the room to continue, promote at least one guest to host before leaving.
+</Warning>
+
+### All Users Leave
+
+If every participant (host and guests) leaves:
+
+- Room is deleted from Redis
+- All associated data (chat, video state) is removed
+- Room ID becomes available for reuse
+
+## Multiple Hosts
+
+Watch N Chill supports multiple simultaneous hosts:
+
+### Promoting Guests
+
+Hosts can promote any guest to host status:
+
+<Steps>
+  <Step title="Open User List">
+    In the room sidebar, locate the participant you want to promote.
+  </Step>
+  
+  <Step title="Click Promote">
+    Click the crown icon button next to their name.
+  </Step>
+  
+  <Step title="Instant Promotion">
+    The guest is immediately promoted and gains all host privileges.
+  </Step>
+  
+  <Step title="Notification">
+    All participants see an update that the user is now a host.
+  </Step>
+</Steps>
+
+### Multiple Host Behavior
+
+<CardGroup cols={2}>
+  <Card title="Shared Control" icon="users">
+    All hosts can control playback simultaneously. Last action wins.
+  </Card>
+  <Card title="Independent Sync" icon="tower-broadcast">
+    Each host sends periodic sync checks every 5 seconds.
+  </Card>
+  <Card title="No Conflicts" icon="shield">
+    The system doesn't enforce "who's in control" - collaboration is expected.
+  </Card>
+  <Card title="Equal Privileges" icon="scale-balanced">
+    All hosts have identical permissions, including promoting others.
+  </Card>
+</CardGroup>
+
+<Tip>
+Multiple hosts are perfect for co-hosting watch parties where you want to share control responsibilities.
+</Tip>
+
+## Sharing Your Room
+
+Share your room with friends using multiple methods:
+
+### Copy Room ID
+
+Click the "Copy Room ID" button in the room header to copy the 6-character code to your clipboard.
+
+### Share Link
+
+Click the "Share" button to:
+- Use native share dialog (mobile)
+- Copy full URL to clipboard (desktop)
+
+The URL format is:
+```
+https://watchnchill.app/room/{roomId}
+```
+
+### Manual Sharing
+
+Simply tell your friends the 6-character room ID and they can enter it on the homepage.
+
+## Room Limitations
+
+<Note>
+**Current Limitations**
+
+- Maximum room duration: 24 hours
+- No room passwords or access control
+- No persistent room URLs (expires after 24h)
+- No room customization (themes, names)
+- Anyone with the room ID can join
+</Note>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Promote Co-Hosts" icon="user-plus">
+    Promote trusted friends to host early in case you disconnect.
+  </Card>
+  <Card title="Share Responsibly" icon="eye">
+    Only share room IDs with people you want in your watch party.
+  </Card>
+  <Card title="Plan Duration" icon="clock">
+    Rooms expire after 24 hours - plan longer watch sessions accordingly.
+  </Card>
+  <Card title="Save Room ID" icon="bookmark">
+    Keep your room ID handy if you need to rejoin after disconnecting.
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Can't Join Room
+
+**"Room not found"** error:
+- Room may have expired (24-hour limit)
+- Room ID might be incorrect (check for typos)
+- Host might have left, closing the room
+
+### Lost Host Status
+
+**Joined as guest instead of host:**
+- Your session storage was cleared
+- You're on a different device
+- Your browser restarted
+
+<Warning>
+If you lose host status and no other hosts exist, the room will close when you leave. Create a new room if needed.
+</Warning>
+
+### Name Already Taken
+
+**"Name already taken"** error:
+- Someone else in the room has that name
+- Choose a different name to join
+- If it's you on a different device, the system sees it as a different user

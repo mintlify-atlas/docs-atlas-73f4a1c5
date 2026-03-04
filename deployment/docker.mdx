@@ -1,0 +1,519 @@
+---
+title: 'Docker Deployment'
+description: 'Deploy Watch N Chill using Docker and Docker Compose'
+icon: 'docker'
+---
+
+## Overview
+
+Watch N Chill includes production-ready Docker configurations for containerized deployments. The application uses a multi-stage Dockerfile for optimized image size and includes health checks for reliability.
+
+## Quick Start
+
+<Steps>
+  <Step title="Using Pre-built Image">
+    Pull and run the production image with Docker Compose:
+    
+    ```bash
+    # Download docker-compose.prod.yml
+    curl -O https://raw.githubusercontent.com/yourusername/watchnchill/main/docker-compose.prod.yml
+    
+    # Start services
+    docker compose -f docker-compose.prod.yml up -d
+    ```
+    
+    Access the application at [http://localhost:3000](http://localhost:3000)
+  </Step>
+  
+  <Step title="Building from Source">
+    Clone the repository and build locally:
+    
+    ```bash
+    git clone https://github.com/yourusername/watchnchill.git
+    cd watchnchill
+    docker compose up --build
+    ```
+  </Step>
+</Steps>
+
+## Docker Compose Configurations
+
+### Development (docker-compose.yml)
+
+Builds the application from source with local Redis:
+
+<CodeGroup>
+
+```yaml docker-compose.yml
+services:
+  app:
+    build: .
+    container_name: watch-with-me-app
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: watch-with-redis
+    ports:
+      - '6380:6379'  # External port 6380 to avoid conflicts
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  redis_data:
+    driver: local
+```
+
+```yaml docker-compose.prod.yml
+services:
+  app:
+    image: nawinsharma/watchwithme:latest
+    container_name: watch-with-me-app
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=redis://redis:6379
+    depends_on:
+      - redis
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+      interval: 30s
+      timeout: 10s
+      retries: 3
+
+  redis:
+    image: redis:7-alpine
+    container_name: watch-with-redis
+    ports:
+      - '6379:6379'
+    volumes:
+      - redis_data:/data
+    command: redis-server --appendonly yes
+    restart: unless-stopped
+    healthcheck:
+      test: ['CMD', 'redis-cli', 'ping']
+      interval: 10s
+      timeout: 3s
+      retries: 3
+
+volumes:
+  redis_data:
+    driver: local
+```
+
+</CodeGroup>
+
+## Dockerfile Breakdown
+
+The multi-stage Dockerfile optimizes the final image size:
+
+```dockerfile Dockerfile
+FROM node:20-alpine AS base
+
+# Stage 1: Install dependencies
+FROM base AS deps
+RUN apk add --no-cache libc6-compat
+WORKDIR /app
+COPY package.json package-lock.json* ./
+RUN npm ci
+
+# Stage 2: Build application
+FROM base AS builder
+WORKDIR /app
+COPY --from=deps /app/node_modules ./node_modules
+COPY . .
+RUN npm run build
+
+# Stage 3: Production runtime
+FROM base AS runner
+WORKDIR /app
+
+ENV NODE_ENV=production
+
+# Create non-root user
+RUN addgroup --system --gid 1001 nodejs
+RUN adduser --system --uid 1001 nextjs
+
+# Copy built application
+COPY --from=builder /app/public ./public
+COPY --from=builder --chown=nextjs:nodejs /app/.next ./.next
+COPY --from=builder --chown=nextjs:nodejs /app/server.ts ./
+COPY --from=builder --chown=nextjs:nodejs /app/src ./src
+COPY --from=builder --chown=nextjs:nodejs /app/node_modules ./node_modules
+COPY --from=builder --chown=nextjs:nodejs /app/package.json ./package.json
+COPY --from=builder --chown=nextjs:nodejs /app/tsconfig.json ./tsconfig.json
+
+USER nextjs
+
+EXPOSE 3000
+
+ENV PORT=3000
+ENV HOSTNAME="0.0.0.0"
+
+# Start with tsx for TypeScript execution
+CMD ["npx", "tsx", "server.ts"]
+```
+
+### Image Features
+
+<CardGroup cols={2}>
+  <Card title="Multi-stage Build" icon="layer-group">
+    Separate stages for deps, build, and runtime reduce final image size
+  </Card>
+  <Card title="Alpine Linux" icon="mountain">
+    Uses `node:20-alpine` for minimal footprint (~150MB final image)
+  </Card>
+  <Card title="Non-root User" icon="user-shield">
+    Runs as `nextjs` user (UID 1001) for security
+  </Card>
+  <Card title="Standalone Output" icon="box">
+    Next.js standalone mode bundles only required dependencies
+  </Card>
+</CardGroup>
+
+## Environment Configuration
+
+### Using .env File
+
+Create a `.env` file alongside `docker-compose.yml`:
+
+```bash .env
+# Redis connection
+REDIS_URL=redis://redis:6379
+
+# CORS origins (comma-separated)
+ALLOWED_ORIGINS=https://your-domain.com,https://www.your-domain.com
+
+# Rate limiting
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=360
+RATE_LIMIT_SOCKET_MAX_PER_IP=10
+
+# Server configuration
+PORT=3000
+HOSTNAME=0.0.0.0
+NODE_ENV=production
+```
+
+Then reference in docker-compose.yml:
+
+```yaml
+services:
+  app:
+    env_file:
+      - .env
+```
+
+### Using External Redis
+
+To use a hosted Redis instance (like Upstash) instead of the container:
+
+```yaml docker-compose.yml
+services:
+  app:
+    image: nawinsharma/watchwithme:latest
+    ports:
+      - '3000:3000'
+    environment:
+      - NODE_ENV=production
+      - REDIS_URL=rediss://default:<password>@<subdomain>.upstash.io:6379
+      - ALLOWED_ORIGINS=https://your-domain.com
+    restart: unless-stopped
+
+# Remove redis service and volume
+```
+
+## Running Commands
+
+### Start Services
+
+<CodeGroup>
+
+```bash Detached Mode (Background)
+docker compose up -d
+```
+
+```bash Foreground (View Logs)
+docker compose up
+```
+
+```bash Rebuild on Changes
+docker compose up --build
+```
+
+</CodeGroup>
+
+### Stop Services
+
+```bash
+# Stop containers but keep volumes
+docker compose down
+
+# Stop and remove volumes (data loss!)
+docker compose down -v
+```
+
+### View Logs
+
+<CodeGroup>
+
+```bash All Services
+docker compose logs -f
+```
+
+```bash App Only
+docker compose logs -f app
+```
+
+```bash Redis Only
+docker compose logs -f redis
+```
+
+</CodeGroup>
+
+### Execute Commands
+
+```bash
+# Redis CLI
+docker compose exec redis redis-cli
+
+# App shell
+docker compose exec app sh
+
+# Check health
+docker compose exec app curl http://localhost:3000/health
+```
+
+## Health Checks
+
+### Application Health Check
+
+The app container includes a health check that polls the `/health` endpoint:
+
+```yaml
+healthcheck:
+  test: ['CMD', 'curl', '-f', 'http://localhost:3000/health']
+  interval: 30s
+  timeout: 10s
+  retries: 3
+```
+
+**Endpoint response:**
+```bash
+curl http://localhost:3000/health
+# Output: heart beating
+```
+
+### Redis Health Check
+
+```yaml
+healthcheck:
+  test: ['CMD', 'redis-cli', 'ping']
+  interval: 10s
+  timeout: 3s
+  retries: 3
+```
+
+**Manual check:**
+```bash
+docker compose exec redis redis-cli ping
+# Output: PONG
+```
+
+## Volume Management
+
+### Redis Data Persistence
+
+Redis data is persisted in a Docker volume:
+
+```yaml
+volumes:
+  redis_data:
+    driver: local
+```
+
+**Backup Redis data:**
+```bash
+# Create backup
+docker compose exec redis redis-cli SAVE
+docker cp watch-with-redis:/data/dump.rdb ./redis-backup-$(date +%Y%m%d).rdb
+```
+
+**Restore Redis data:**
+```bash
+# Stop services
+docker compose down
+
+# Restore dump file
+docker volume create redis_data
+docker run --rm -v redis_data:/data -v $(pwd):/backup alpine \
+  cp /backup/redis-backup-YYYYMMDD.rdb /data/dump.rdb
+
+# Start services
+docker compose up -d
+```
+
+## Building Custom Images
+
+### Build Locally
+
+```bash
+# Build with default tag
+docker build -t watchnchill:latest .
+
+# Build with custom tag
+docker build -t watchnchill:v1.0.0 .
+
+# Build for multiple platforms
+docker buildx build --platform linux/amd64,linux/arm64 -t watchnchill:latest .
+```
+
+### Push to Registry
+
+```bash
+# Tag for Docker Hub
+docker tag watchnchill:latest yourusername/watchnchill:latest
+
+# Push to Docker Hub
+docker push yourusername/watchnchill:latest
+
+# Tag for GitHub Container Registry
+docker tag watchnchill:latest ghcr.io/yourusername/watchnchill:latest
+
+# Push to GHCR
+docker push ghcr.io/yourusername/watchnchill:latest
+```
+
+## Networking
+
+Docker Compose creates a default network for service communication:
+
+- **App container**: Accessible at `http://localhost:3000`
+- **Redis container**: Accessible internally at `redis:6379`
+- **Redis external**: Accessible at `localhost:6380` (dev) or `localhost:6379` (prod)
+
+### Custom Network
+
+```yaml
+services:
+  app:
+    networks:
+      - watchnchill
+  redis:
+    networks:
+      - watchnchill
+
+networks:
+  watchnchill:
+    driver: bridge
+```
+
+## Troubleshooting
+
+### Container Won't Start
+
+```bash
+# Check container status
+docker compose ps
+
+# View full logs
+docker compose logs app
+
+# Inspect container
+docker compose inspect app
+```
+
+### Port Already in Use
+
+Change the port mapping in `docker-compose.yml`:
+
+```yaml
+ports:
+  - '3001:3000'  # External:Internal
+```
+
+### Redis Connection Failed
+
+```bash
+# Verify Redis is running
+docker compose ps redis
+
+# Check Redis logs
+docker compose logs redis
+
+# Test connection from app container
+docker compose exec app sh -c 'apk add redis && redis-cli -h redis ping'
+```
+
+### Health Check Failing
+
+```bash
+# Check health status
+docker compose ps
+
+# Manually test health endpoint
+docker compose exec app curl -f http://localhost:3000/health
+
+# Check if port 3000 is listening
+docker compose exec app netstat -tuln | grep 3000
+```
+
+## Production Considerations
+
+<Warning>
+  For production deployments, consider:
+  
+  - Use external Redis (Upstash) instead of container for better reliability
+  - Configure `ALLOWED_ORIGINS` for CORS
+  - Set up reverse proxy (nginx/traefik) for SSL termination
+  - Use Docker Swarm or Kubernetes for orchestration
+  - Implement log aggregation (ELK stack, Loki)
+  - Set resource limits in docker-compose.yml
+</Warning>
+
+### Resource Limits
+
+```yaml
+services:
+  app:
+    deploy:
+      resources:
+        limits:
+          cpus: '1'
+          memory: 512M
+        reservations:
+          cpus: '0.5'
+          memory: 256M
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="gear" href="/deployment/environment-variables">
+    Configure all environment options
+  </Card>
+  <Card title="Production Deployment" icon="rocket" href="/deployment/production">
+    Deploy to cloud platforms
+  </Card>
+</CardGroup>

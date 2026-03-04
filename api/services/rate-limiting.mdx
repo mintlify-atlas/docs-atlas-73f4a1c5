@@ -1,0 +1,339 @@
+---
+title: Rate limiting
+description: HTTP and Socket.IO rate limiting implementation
+---
+
+Watch N Chill implements two layers of rate limiting to protect against abuse:
+
+1. **HTTP rate limiting** - Limits requests per IP address over a time window
+2. **Socket.IO connection limiting** - Limits concurrent WebSocket connections per IP
+
+Both use Redis for distributed rate limiting across multiple server instances, with in-memory fallback if Redis is unavailable.
+
+## HTTP rate limiting
+
+HTTP requests are rate-limited per IP address using a sliding window algorithm.
+
+### Configuration
+
+<ParamField path="RATE_LIMIT_WINDOW_MS" type="number" default="60000">
+  Time window in milliseconds for rate limiting. Default is 60 seconds.
+</ParamField>
+
+<ParamField path="RATE_LIMIT_MAX_REQUESTS" type="number" default="360">
+  Maximum number of requests allowed per window. Default is 360 requests per minute (6 req/s).
+</ParamField>
+
+### Implementation
+
+```typescript src/backend/rate-limit.ts:4-6
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10);
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '360', 10);
+const RATE_LIMIT_KEY_PREFIX = 'rl:';
+```
+
+#### Redis-backed rate limiting
+
+The rate limiter uses a Lua script for atomic increment and expiry operations:
+
+```typescript src/backend/rate-limit.ts:9-15
+const LUA_SCRIPT = `
+  local current = redis.call('INCR', KEYS[1])
+  if current == 1 then
+    redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  end
+  return current
+`;
+```
+
+<Accordion title="Why use Lua?">
+  Lua scripts execute atomically in Redis, ensuring that the increment and expiry operations happen together without race conditions. This prevents edge cases where keys could be incremented but never expire.
+</Accordion>
+
+```typescript src/backend/rate-limit.ts:60-67
+async function checkRedisRateLimit(ip: string): Promise<{ allowed: boolean; remaining: number }> {
+  const key = `${RATE_LIMIT_KEY_PREFIX}${ip}`;
+  const windowMs = RATE_LIMIT_WINDOW_MS.toString();
+  const current = (await redis.eval(LUA_SCRIPT, 1, key, windowMs)) as number;
+  const allowed = current <= RATE_LIMIT_MAX_REQUESTS;
+  const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - current);
+  return { allowed, remaining };
+}
+```
+
+#### In-memory fallback
+
+If Redis is unavailable, rate limiting falls back to an in-memory store:
+
+```typescript src/backend/rate-limit.ts:31-58
+const memoryStore = new Map<string, { count: number; resetAt: number }>();
+
+async function checkMemoryRateLimit(ip: string): Promise<{ allowed: boolean; remaining: number }> {
+  const now = Date.now();
+  const key = ip;
+  let entry = memoryStore.get(key);
+  if (!entry || entry.resetAt <= now) {
+    entry = { count: 0, resetAt: now + RATE_LIMIT_WINDOW_MS };
+    memoryStore.set(key, entry);
+  }
+  entry.count += 1;
+  // Periodic cleanup...
+  const allowed = entry.count <= RATE_LIMIT_MAX_REQUESTS;
+  const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - entry.count);
+  return { allowed, remaining };
+}
+```
+
+<Warning>
+  The in-memory fallback is per-process and not shared across multiple server instances. For production deployments with multiple servers, ensure Redis is always available.
+</Warning>
+
+### Rate limit enforcement
+
+Rate limiting is enforced in the custom server before Next.js handles the request:
+
+```typescript server.ts:56-67
+if (!dev) {
+  const { allowed, remaining } = await checkRateLimit(req);
+  res.setHeader('X-RateLimit-Limit', String(getRateLimitConfig().maxRequests));
+  res.setHeader('X-RateLimit-Remaining', String(remaining));
+  if (!allowed) {
+    res.statusCode = 429;
+    res.setHeader('Retry-After', String(retryAfterSec));
+    res.setHeader('content-type', 'text/plain; charset=utf-8');
+    res.end('Too Many Requests');
+    return;
+  }
+}
+```
+
+<Note>
+  Rate limiting is disabled in development mode (`NODE_ENV !== 'production'`) to avoid interrupting local development.
+</Note>
+
+### Response headers
+
+Rate limit information is included in response headers:
+
+| Header | Description |
+|--------|-------------|
+| `X-RateLimit-Limit` | Maximum requests allowed per window |
+| `X-RateLimit-Remaining` | Requests remaining in current window |
+| `Retry-After` | Seconds to wait before retrying (on 429 responses) |
+
+### Client IP extraction
+
+The rate limiter identifies clients by IP address, checking multiple headers:
+
+```typescript src/backend/rate-limit.ts:17-28
+function getClientIp(req: IncomingMessage): string {
+  const forwarded = req.headers['x-forwarded-for'];
+  if (forwarded) {
+    const first = typeof forwarded === 'string' ? forwarded.split(',')[0] : forwarded[0];
+    return first?.trim() ?? req.socket.remoteAddress ?? 'unknown';
+  }
+  const realIp = req.headers['x-real-ip'];
+  if (realIp) {
+    return typeof realIp === 'string' ? realIp : realIp[0] ?? 'unknown';
+  }
+  return req.socket.remoteAddress ?? 'unknown';
+}
+```
+
+## Socket.IO connection limiting
+
+Socket.IO connections are limited per IP address to prevent WebSocket exhaustion attacks.
+
+### Configuration
+
+<ParamField path="RATE_LIMIT_SOCKET_MAX_PER_IP" type="number" default="10">
+  Maximum concurrent Socket.IO connections per IP address. Default is 10.
+</ParamField>
+
+```typescript src/backend/rate-limit.ts:86
+const SOCKET_CONN_MAX_PER_IP = parseInt(process.env.RATE_LIMIT_SOCKET_MAX_PER_IP || '10', 10);
+```
+
+### Implementation
+
+Connection counts are tracked in Redis with automatic expiry:
+
+```typescript src/backend/rate-limit.ts:93-102
+export async function checkSocketConnectionAllowed(ip: string): Promise<{ allowed: boolean }> {
+  const key = `${SOCKET_KEY_PREFIX}${ip}`;
+  try {
+    const current = await redis.incr(key);
+    if (current === 1) await redis.expire(key, 3600); // 1h TTL
+    return { allowed: current <= SOCKET_CONN_MAX_PER_IP };
+  } catch {
+    return { allowed: true }; // allow on Redis failure
+  }
+}
+```
+
+<Accordion title="Why 1-hour TTL?">
+  The 1-hour TTL ensures that connection counters are eventually cleaned up even if clients disconnect ungracefully without triggering the `decrementSocketConnection` cleanup.
+</Accordion>
+
+### Enforcement in Socket.IO
+
+Connection limits are checked during Socket.IO connection establishment:
+
+```typescript src/backend/socket/index.ts:32-45
+io.on('connection', async (socket) => {
+  const forwarded = socket.handshake.headers['x-forwarded-for'];
+  const clientIp =
+    (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : forwarded?.[0]?.trim()) ??
+    socket.handshake.address ??
+    socket.conn.remoteAddress ??
+    'unknown';
+  socket.data.clientIp = clientIp;
+
+  const { allowed } = await checkSocketConnectionAllowed(clientIp);
+  if (!allowed) {
+    socket.disconnect(true);
+    return;
+  }
+  // ... rest of connection handler
+});
+```
+
+### Cleanup on disconnect
+
+When a socket disconnects, the connection counter is decremented:
+
+```typescript src/backend/socket/handleDisconnect.ts
+import { decrementSocketConnection } from '@/backend/rate-limit';
+
+export function handleDisconnect(socket: Socket) {
+  const clientIp = socket.data.clientIp;
+  if (clientIp) {
+    decrementSocketConnection(clientIp);
+  }
+  // ... rest of disconnect handling
+}
+```
+
+```typescript src/backend/rate-limit.ts:104-111
+export async function decrementSocketConnection(ip: string): Promise<void> {
+  const key = `${SOCKET_KEY_PREFIX}${ip}`;
+  try {
+    await redis.decr(key);
+  } catch {
+    // ignore
+  }
+}
+```
+
+## Redis key structure
+
+<CardGroup cols={2}>
+  <Card title="HTTP rate limit" icon="gauge">
+    **Key**: `rl:{ip}`
+    
+    **Type**: Integer (request count)
+    
+    **TTL**: Rate limit window (default 60s)
+    
+    Counter of requests from this IP in the current window.
+  </Card>
+  
+  <Card title="Socket connections" icon="plug">
+    **Key**: `rl:socket:{ip}`
+    
+    **Type**: Integer (connection count)
+    
+    **TTL**: 1 hour
+    
+    Number of active Socket.IO connections from this IP.
+  </Card>
+</CardGroup>
+
+## Production recommendations
+
+<AccordionGroup>
+  <Accordion title="Adjust limits for your traffic">
+    The default limits (360 req/min HTTP, 10 concurrent sockets) are conservative. Monitor your traffic patterns and adjust accordingly:
+    
+    ```bash
+    # For high-traffic sites
+    RATE_LIMIT_MAX_REQUESTS=1000
+    RATE_LIMIT_SOCKET_MAX_PER_IP=25
+    ```
+  </Accordion>
+  
+  <Accordion title="Use Redis in production">
+    Always use Redis in production for accurate distributed rate limiting:
+    
+    ```bash
+    REDIS_URL=rediss://default:password@your-upstash.upstash.io:6379
+    ```
+    
+    The in-memory fallback is per-process and won't protect against distributed attacks.
+  </Accordion>
+  
+  <Accordion title="Monitor rate limit hits">
+    Log or monitor 429 responses to identify legitimate users hitting limits or potential attacks:
+    
+    ```typescript
+    if (!allowed) {
+      console.warn(`Rate limit exceeded for IP ${ip}`);
+      // Send to monitoring service
+    }
+    ```
+  </Accordion>
+  
+  <Accordion title="Consider allowlisting">
+    For known good IPs (health checks, monitoring, trusted partners), implement allowlisting:
+    
+    ```typescript
+    const ALLOWLISTED_IPS = process.env.ALLOWLISTED_IPS?.split(',') || [];
+    
+    if (ALLOWLISTED_IPS.includes(ip)) {
+      return { allowed: true, remaining: maxRequests };
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+## API reference
+
+### checkRateLimit
+
+```typescript
+async function checkRateLimit(req: IncomingMessage): Promise<{
+  allowed: boolean;
+  remaining: number;
+}>
+```
+
+Checks if an HTTP request should be allowed based on rate limiting.
+
+### checkSocketConnectionAllowed
+
+```typescript
+async function checkSocketConnectionAllowed(ip: string): Promise<{
+  allowed: boolean;
+}>
+```
+
+Checks if a new Socket.IO connection from the given IP should be allowed.
+
+### decrementSocketConnection
+
+```typescript
+async function decrementSocketConnection(ip: string): Promise<void>
+```
+
+Decrements the connection counter for an IP when a socket disconnects.
+
+### getRateLimitConfig
+
+```typescript
+function getRateLimitConfig(): {
+  windowMs: number;
+  maxRequests: number;
+}
+```
+
+Returns the current rate limiting configuration.

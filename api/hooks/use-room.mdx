@@ -1,0 +1,322 @@
+---
+title: 'useRoom'
+description: 'React hook for managing room state, user interactions, and real-time socket communication'
+---
+
+## Overview
+
+The `useRoom` hook is the primary hook for managing room functionality in Watch N Chill. It handles:
+
+- Room state management and socket event synchronization
+- User authentication and session management
+- Real-time chat messaging and typing indicators
+- User promotion and host controls
+- Error handling and connection state
+
+This hook automatically joins a room when the socket connects and handles cleanup when the component unmounts.
+
+## Import
+
+```typescript
+import { useRoom } from '@/hooks/use-room';
+```
+
+## Parameters
+
+<ParamField path="roomId" type="string" required>
+  The unique 6-character room identifier (uppercase letters and numbers)
+</ParamField>
+
+## Return Value
+
+Returns an object with the following properties:
+
+### State Properties
+
+<ResponseField name="room" type="Room | null">
+  The current room object containing:
+  - `id`: Room ID
+  - `hostId`: Host user ID
+  - `hostName`: Host username
+  - `hostToken`: Host authentication token
+  - `videoUrl`: Current video URL (optional)
+  - `videoType`: Video platform type (`'youtube'` or `null`)
+  - `videoState`: Video playback state (playing, currentTime, duration, lastUpdateTime)
+  - `users`: Array of User objects in the room
+  - `createdAt`: Room creation timestamp
+</ResponseField>
+
+<ResponseField name="currentUser" type="User | null">
+  The current user object containing:
+  - `id`: User ID (UUID)
+  - `name`: Username
+  - `isHost`: Whether the user is a host
+  - `joinedAt`: Timestamp when user joined
+</ResponseField>
+
+<ResponseField name="messages" type="ChatMessage[]">
+  Array of chat messages with:
+  - `id`: Message ID (UUID)
+  - `userId`: Sender's user ID
+  - `userName`: Sender's username
+  - `message`: Message content (1-1000 characters)
+  - `timestamp`: Message timestamp
+  - `roomId`: Room ID
+  - `isRead`: Whether the message has been read
+</ResponseField>
+
+<ResponseField name="typingUsers" type="TypingUser[]">
+  Array of users currently typing:
+  - `userId`: User ID
+  - `userName`: Username
+  - `timestamp`: Timestamp of typing event
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Room-level error message (e.g., room not found, join failed)
+</ResponseField>
+
+<ResponseField name="syncError" type="string">
+  Video synchronization or socket error message (auto-clears after 5 seconds)
+</ResponseField>
+
+<ResponseField name="isJoining" type="boolean">
+  Whether the room join process is in progress
+</ResponseField>
+
+<ResponseField name="showGuestInfoBanner" type="boolean">
+  Whether to display the guest information banner (shown when non-hosts join a room with video)
+</ResponseField>
+
+<ResponseField name="showHostDialog" type="boolean">
+  Whether to display the host controls dialog
+</ResponseField>
+
+<ResponseField name="showCopied" type="boolean">
+  Whether to display the "copied" feedback (shown for 2 seconds after copying room ID)
+</ResponseField>
+
+### Action Functions
+
+<ResponseField name="setShowGuestInfoBanner" type="(show: boolean) => void">
+  Show or hide the guest information banner
+</ResponseField>
+
+<ResponseField name="setShowHostDialog" type="(show: boolean) => void">
+  Show or hide the host controls dialog
+</ResponseField>
+
+<ResponseField name="setShowCopied" type="(show: boolean) => void">
+  Show or hide the copied feedback indicator
+</ResponseField>
+
+<ResponseField name="handlePromoteUser" type="(userId: string) => void">
+  Promote a user to host status (only available to current hosts)
+  
+  **Parameters:**
+  - `userId`: The UUID of the user to promote
+</ResponseField>
+
+<ResponseField name="handleSendMessage" type="(message: string) => void">
+  Send a chat message to the room
+  
+  **Parameters:**
+  - `message`: Message content (1-1000 characters)
+</ResponseField>
+
+<ResponseField name="handleTypingStart" type="() => void">
+  Notify other users that current user started typing
+</ResponseField>
+
+<ResponseField name="handleTypingStop" type="() => void">
+  Notify other users that current user stopped typing
+</ResponseField>
+
+<ResponseField name="markMessagesAsRead" type="() => void">
+  Mark all messages in the current chat as read
+</ResponseField>
+
+<ResponseField name="copyRoomId" type="() => void">
+  Copy the room ID to clipboard and show feedback for 2 seconds
+</ResponseField>
+
+<ResponseField name="shareRoom" type="() => void">
+  Share the room URL using the Web Share API (or copy to clipboard as fallback)
+</ResponseField>
+
+## Usage Example
+
+```typescript
+'use client';
+
+import { useRoom } from '@/hooks/use-room';
+import { useParams } from 'next/navigation';
+
+export default function RoomPage() {
+  const params = useParams();
+  const roomId = params.roomId as string;
+  
+  const {
+    room,
+    currentUser,
+    messages,
+    typingUsers,
+    error,
+    syncError,
+    isJoining,
+    handleSendMessage,
+    handleTypingStart,
+    handleTypingStop,
+    handlePromoteUser,
+    copyRoomId,
+  } = useRoom({ roomId });
+
+  if (isJoining) {
+    return <div>Joining room...</div>;
+  }
+
+  if (error) {
+    return <div>Error: {error}</div>;
+  }
+
+  if (!room || !currentUser) {
+    return <div>Loading room...</div>;
+  }
+
+  return (
+    <div>
+      <h1>Room: {room.id}</h1>
+      <button onClick={copyRoomId}>Copy Room ID</button>
+      
+      {syncError && (
+        <div className="error">{syncError}</div>
+      )}
+      
+      <div className="users">
+        <h2>Users in room ({room.users.length})</h2>
+        {room.users.map(user => (
+          <div key={user.id}>
+            {user.name} {user.isHost && '(Host)'}
+            {currentUser.isHost && !user.isHost && (
+              <button onClick={() => handlePromoteUser(user.id)}>
+                Promote to Host
+              </button>
+            )}
+          </div>
+        ))}
+      </div>
+      
+      <div className="chat">
+        <h2>Chat</h2>
+        {messages.map(msg => (
+          <div key={msg.id}>
+            <strong>{msg.userName}:</strong> {msg.message}
+          </div>
+        ))}
+        
+        {typingUsers.length > 0 && (
+          <div>
+            {typingUsers.map(u => u.userName).join(', ')} {typingUsers.length === 1 ? 'is' : 'are'} typing...
+          </div>
+        )}
+        
+        <input
+          type="text"
+          onFocus={handleTypingStart}
+          onBlur={handleTypingStop}
+          onKeyDown={(e) => {
+            if (e.key === 'Enter') {
+              handleSendMessage(e.currentTarget.value);
+              e.currentTarget.value = '';
+            }
+          }}
+        />
+      </div>
+    </div>
+  );
+}
+```
+
+## State Management
+
+The hook manages state through several mechanisms:
+
+### Socket Event Handlers
+
+The hook listens to these socket events:
+
+- `room-joined`: Successfully joined room, updates room and user state
+- `user-joined`: Another user joined, adds to user list
+- `user-left`: User left room, removes from user list and typing indicators
+- `user-promoted`: User promoted to host, updates user permissions
+- `video-set`: Video URL changed, updates room video state
+- `new-message`: New chat message received, adds to messages array
+- `user-typing`: User started typing, adds to typing indicators
+- `user-stopped-typing`: User stopped typing, removes from typing indicators
+- `room-error`: Room-level error occurred (e.g., all hosts left)
+- `error`: Socket-level error occurred (e.g., authentication failed)
+
+### Session Management
+
+The hook integrates with `roomSessionStorage` to handle:
+
+- **Room Creator Flow**: Automatically joins with host credentials when navigating from create page
+- **Join Flow**: Uses stored username when navigating from join page
+- **Direct Access**: Prompts for username if accessing room URL directly without credentials
+
+### Automatic Cleanup
+
+When the component unmounts, the hook automatically:
+
+1. Emits a `leave-room` event to notify the server
+2. Removes socket event listeners to prevent memory leaks
+3. Clears internal state and prevents duplicate join attempts
+
+## Error Handling
+
+The hook implements sophisticated error handling:
+
+- **Error Deduplication**: Prevents showing the same error multiple times within 5 seconds
+- **Context-Aware Errors**: Ignores certain errors when user is already successfully in room
+- **Auto-Clear**: Sync errors automatically clear after 5 seconds
+- **Room Closure**: Displays toast notification and redirects home when all hosts leave
+
+## Type Definitions
+
+```typescript
+interface UseRoomOptions {
+  roomId: string;
+}
+
+interface UseRoomReturn {
+  // State
+  room: Room | null;
+  currentUser: User | null;
+  messages: ChatMessage[];
+  typingUsers: TypingUser[];
+  error: string;
+  syncError: string;
+  isJoining: boolean;
+  showGuestInfoBanner: boolean;
+  showHostDialog: boolean;
+  showCopied: boolean;
+
+  // Actions
+  setShowGuestInfoBanner: (show: boolean) => void;
+  setShowHostDialog: (show: boolean) => void;
+  setShowCopied: (show: boolean) => void;
+  handlePromoteUser: (userId: string) => void;
+  handleSendMessage: (message: string) => void;
+  handleTypingStart: () => void;
+  handleTypingStop: () => void;
+  markMessagesAsRead: () => void;
+  copyRoomId: () => void;
+  shareRoom: () => void;
+}
+```
+
+## Related Hooks
+
+- [useVideoSync](/api/hooks/use-video-sync) - Manages video playback synchronization
+- [useCreateRoom](/api/hooks/use-create-room) - Handles room creation flow
+- [useJoinRoom](/api/hooks/use-join-room) - Handles room joining flow

@@ -1,0 +1,661 @@
+---
+title: 'Real-Time Video Synchronization'
+description: 'Deep dive into the video sync mechanism, drift correction, and YouTube player state management'
+---
+
+## Synchronization Architecture
+
+Watch N Chill uses a **host-driven synchronization model** where the host's player state is the source of truth, and guests continuously sync to the host's position.
+
+### Sync Model Overview
+
+```
+┌──────────────────────────────────────────────────────────────────┐
+│                         Host (Source of Truth)                    │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  YouTube Player                                             │  │
+│  │  - Play/Pause/Seek events trigger broadcasts               │  │
+│  │  - Periodic sync check every 5 seconds                     │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                              │                                    │
+│                              ▼                                    │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  useVideoSync Hook                                          │  │
+│  │  - handleYouTubeStateChange()                               │  │
+│  │  - startSyncCheck() → every 5s                             │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              │ Socket.IO
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                             Server                                │
+│  - Validates host permission                                      │
+│  - Stores video state in Redis                                   │
+│  - Broadcasts to guests in room                                  │
+└──────────────────────────────────────────────────────────────────┘
+                              │
+                              │ Socket.IO
+                              ▼
+┌──────────────────────────────────────────────────────────────────┐
+│                      Guests (Sync to Host)                        │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  Socket Event Handlers                                      │  │
+│  │  - video-played, video-paused, video-seeked               │  │
+│  │  - sync-update (every 5s from host)                       │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                              │                                    │
+│                              ▼                                    │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  syncVideo() Function                                       │  │
+│  │  - Calculate adjusted time from timestamp                  │  │
+│  │  - Check drift > 1.5s threshold                            │  │
+│  │  - Seek player if needed                                   │  │
+│  │  - Sync play/pause state                                   │  │
+│  └────────────────────────────────────────────────────────────┘  │
+│                              │                                    │
+│                              ▼                                    │
+│  ┌────────────────────────────────────────────────────────────┐  │
+│  │  YouTube Player                                             │  │
+│  │  - Synced to host's position (within 1.5s)                │  │
+│  └────────────────────────────────────────────────────────────┘  │
+└──────────────────────────────────────────────────────────────────┘
+```
+
+## Host: Periodic Sync Checks
+
+The host sends sync checks every 5 seconds to ensure guests stay in sync:
+
+```typescript hooks/use-video-sync.ts:199-235
+const startSyncCheck = useCallback(() => {
+  if (syncCheckIntervalRef.current) {
+    clearInterval(syncCheckIntervalRef.current);
+  }
+
+  syncCheckIntervalRef.current = setInterval(() => {
+    // Only proceed if all conditions are met, including socket connection
+    if (!room || !currentUser?.isHost || !socket || !isConnected || !currentUser?.id) {
+      console.log('Sync check skipped:', {
+        hasRoom: !!room,
+        isHost: currentUser?.isHost,
+        hasSocket: !!socket,
+        isConnected,
+        hasUserId: !!currentUser?.id,
+      });
+      return;
+    }
+
+    const player = getCurrentPlayer();
+    if (!player) {
+      console.log('Sync check skipped: no player');
+      return;
+    }
+
+    const currentTime = player.getCurrentTime();
+    const isPlaying = youtubePlayerRef.current?.getPlayerState() === YT_STATES.PLAYING;
+
+    console.log(`Periodic sync check: ${currentTime.toFixed(2)}s, playing: ${isPlaying}`);
+    socket.emit('sync-check', {
+      roomId,
+      currentTime,
+      isPlaying,
+      timestamp: Date.now(),
+    });
+  }, 5000); // Every 5 seconds
+}, [room, currentUser, socket, isConnected, roomId, getCurrentPlayer, youtubePlayerRef]);
+```
+
+<Note>
+  The 5-second interval is a balance between:
+  - **Responsiveness:** Frequent enough to catch guests drifting out of sync
+  - **Performance:** Not so frequent as to overwhelm the server or network
+</Note>
+
+### When Sync Starts
+
+Sync checks are started when a host enters a room with a video:
+
+```typescript room/[roomId]/page.tsx:131-143
+useEffect(() => {
+  if (currentUser?.isHost && room?.videoUrl) {
+    console.log('Starting sync check - user is host');
+    startSyncCheck();
+  } else {
+    console.log('Stopping sync check - user is not host or no video');
+    stopSyncCheck();
+  }
+
+  return () => {
+    stopSyncCheck();
+  };
+}, [currentUser?.isHost, room?.videoUrl, startSyncCheck, stopSyncCheck]);
+```
+
+## Guest: Sync Update Handling
+
+Guests receive sync updates and adjust their video position:
+
+```typescript room/[roomId]/page.tsx:96-115
+const handleSyncUpdate = ({
+  currentTime,
+  isPlaying,
+  timestamp,
+}: {
+  currentTime: number;
+  isPlaying: boolean;
+  timestamp: number;
+}) => {
+  if (currentUser?.isHost) {
+    // Hosts don't sync to sync-updates to avoid conflicts
+    return;
+  }
+  console.log('Received sync update from host:', {
+    currentTime: currentTime.toFixed(2),
+    isPlaying,
+    timestamp,
+  });
+  syncVideo(currentTime, isPlaying, timestamp);
+};
+
+socket.on('sync-update', handleSyncUpdate);
+```
+
+## Time Calculation & Drift Correction
+
+### Calculating Adjusted Time
+
+The server sends the video time at a specific timestamp. Guests must calculate the current time accounting for network latency:
+
+```typescript hooks/use-video-sync.ts:86-91
+const adjustedTime = calculateCurrentTime({
+  currentTime: targetTime,
+  isPlaying: isPlaying ?? false,
+  lastUpdateTime: timestamp,
+});
+```
+
+The `calculateCurrentTime` function in `lib/video-utils.ts`:
+
+```typescript lib/video-utils.ts:40-51
+export function calculateCurrentTime(videoState: {
+  currentTime: number;
+  isPlaying: boolean;
+  lastUpdateTime: number;
+}): number {
+  if (!videoState.isPlaying) {
+    return videoState.currentTime;
+  }
+
+  const timeDiff = (Date.now() - videoState.lastUpdateTime) / 1000;
+  return videoState.currentTime + timeDiff;
+}
+```
+
+<Tabs>
+  <Tab title="Playing Video">
+    For a playing video, the adjusted time accounts for the time elapsed since the sync event:
+    
+    ```
+    Adjusted Time = Server Time + (Now - Server Timestamp)
+    ```
+    
+    **Example:**
+    - Server sends: currentTime = 10.0s, timestamp = 1000ms
+    - Guest receives after 200ms: Now = 1200ms
+    - Adjusted time = 10.0 + (1200 - 1000) / 1000 = 10.2s
+  </Tab>
+  
+  <Tab title="Paused Video">
+    For a paused video, the time doesn't advance:
+    
+    ```
+    Adjusted Time = Server Time
+    ```
+    
+    No adjustment needed since the video isn't playing.
+  </Tab>
+</Tabs>
+
+### Drift Threshold
+
+Guests only seek if the drift exceeds 1.5 seconds:
+
+```typescript hooks/use-video-sync.ts:93-104
+const currentTime = player.getCurrentTime();
+const syncDiff = Math.abs(currentTime - adjustedTime);
+
+// For queued syncs (initial sync on join) or large differences, always sync
+const shouldSyncTime = syncDiff > 1.5 || isQueuedSync;
+
+if (shouldSyncTime) {
+  console.log(`Syncing video: ${syncDiff.toFixed(2)}s difference, seeking to ${adjustedTime.toFixed(2)}s`);
+  player.seekTo(adjustedTime);
+  lastSyncTimeRef.current = now;
+  lastPlayerTimeRef.current = adjustedTime;
+}
+```
+
+<Warning>
+  **Why 1.5 seconds?**
+  
+  - **Too low (< 0.5s):** Constant micro-corrections cause jittery playback
+  - **Too high (> 3s):** Noticeable desync between users
+  - **1.5s:** Sweet spot for smooth playback with acceptable sync accuracy
+</Warning>
+
+## YouTube Player State Management
+
+The host detects player state changes and broadcasts them:
+
+```typescript hooks/use-video-sync.ts:318-371
+const handleYouTubeStateChange = useCallback(
+  (state: number) => {
+    if (!currentUser?.isHost || !socket) return;
+
+    const player = youtubePlayerRef.current;
+    if (!player) return;
+
+    const currentTime = player.getCurrentTime();
+
+    if (state === YT_STATES.PLAYING) {
+      // Check if this is a seek by comparing with last known time
+      const timeDiff = Math.abs(currentTime - lastPlayerTimeRef.current);
+      if (timeDiff > 1) {
+        console.log(`Detected seek to ${currentTime.toFixed(2)}s before play`);
+        lastControlActionRef.current = {
+          timestamp: Date.now(),
+          type: 'seek',
+          userId: currentUser.id,
+        };
+        socket.emit('seek-video', { roomId, currentTime });
+      }
+
+      lastControlActionRef.current = {
+        timestamp: Date.now(),
+        type: 'play',
+        userId: currentUser.id,
+      };
+      lastPlayerTimeRef.current = currentTime;
+      socket.emit('play-video', { roomId, currentTime });
+    } else if (state === YT_STATES.PAUSED) {
+      lastControlActionRef.current = {
+        timestamp: Date.now(),
+        type: 'pause',
+        userId: currentUser.id,
+      };
+      lastPlayerTimeRef.current = currentTime;
+      socket.emit('pause-video', { roomId, currentTime });
+    } else if (state === YT_STATES.BUFFERING) {
+      // Check for potential seek during buffering
+      const timeDiff = Math.abs(currentTime - lastPlayerTimeRef.current);
+      if (timeDiff > 1) {
+        console.log(`Detected seek to ${currentTime.toFixed(2)}s during buffering`);
+        lastControlActionRef.current = {
+          timestamp: Date.now(),
+          type: 'seek',
+          userId: currentUser.id,
+        };
+        lastPlayerTimeRef.current = currentTime;
+        socket.emit('seek-video', { roomId, currentTime });
+      }
+    }
+  },
+  [currentUser, socket, roomId, youtubePlayerRef]
+);
+```
+
+### YouTube Player States
+
+<CardGroup cols={3}>
+  <Card title="UNSTARTED" icon="stop">
+    **State: -1**
+    
+    Video not loaded yet. Requires seek + play to start.
+  </Card>
+  
+  <Card title="PLAYING" icon="play">
+    **State: 1**
+    
+    Video is actively playing. Broadcasts play event.
+  </Card>
+  
+  <Card title="PAUSED" icon="pause">
+    **State: 2**
+    
+    Video is paused. Broadcasts pause event.
+  </Card>
+  
+  <Card title="BUFFERING" icon="spinner">
+    **State: 3**
+    
+    Video is loading. Detects seeks during buffering.
+  </Card>
+  
+  <Card title="CUED" icon="clock">
+    **State: 5**
+    
+    Video is cued but not started. Similar to UNSTARTED.
+  </Card>
+  
+  <Card title="ENDED" icon="flag">
+    **State: 0**
+    
+    Video finished playing.
+  </Card>
+</CardGroup>
+
+## Handling Special Cases
+
+### Buffering & Seek Detection
+
+Seeks can occur during buffering, which must be detected and broadcast:
+
+```typescript hooks/use-video-sync.ts:355-367
+else if (state === YT_STATES.BUFFERING) {
+  // Check for potential seek during buffering
+  const timeDiff = Math.abs(currentTime - lastPlayerTimeRef.current);
+  if (timeDiff > 1) {
+    console.log(`Detected seek to ${currentTime.toFixed(2)}s during buffering`);
+    lastControlActionRef.current = {
+      timestamp: Date.now(),
+      type: 'seek',
+      userId: currentUser.id,
+    };
+    lastPlayerTimeRef.current = currentTime;
+    socket.emit('seek-video', { roomId, currentTime });
+  }
+}
+```
+
+### Preventing Feedback Loops
+
+Guests must not sync to their own control actions:
+
+```typescript hooks/use-video-sync.ts:79-85
+const now = Date.now();
+const timeSinceLastAction = now - lastControlActionRef.current.timestamp;
+if (lastControlActionRef.current.userId === currentUser.id && timeSinceLastAction < 500) {
+  console.log('⏭ Skipping sync - user just performed this action');
+  return true; // Return true to indicate we processed it (even if skipped)
+}
+```
+
+### Player Readiness
+
+Sync requests are queued if the YouTube player isn't ready yet:
+
+```typescript hooks/use-video-sync.ts:54-69
+const isPlayerReady = useCallback(() => {
+  const player = getCurrentPlayer();
+  if (!player) return false;
+  
+  // Check if player methods are callable - this verifies the YouTube API is loaded
+  try {
+    const time = player.getCurrentTime();
+    const duration = player.getDuration();
+    // Player is ready if we can get valid responses from methods
+    // Duration > 0 means video metadata is loaded
+    return duration > 0 || time > 0;
+  } catch {
+    return false;
+  }
+}, [getCurrentPlayer]);
+```
+
+```typescript hooks/use-video-sync.ts:149-197
+const syncVideo = useCallback(
+  (targetTime: number, isPlaying: boolean | null, timestamp: number) => {
+    if (!room || !currentUser) return;
+
+    // Always update queued sync to latest
+    queuedSyncRef.current = { targetTime, isPlaying, timestamp };
+
+    // Queue sync if player is not ready
+    if (!isPlayerReady()) {
+      console.log('⏳ Player not ready, queuing sync request');
+      
+      // Start checking for player readiness if not already checking
+      if (!playerReadyCheckRef.current) {
+        let attempts = 0;
+        const maxAttempts = 200; // Max 10 seconds (200 * 50ms)
+        
+        playerReadyCheckRef.current = setInterval(() => {
+          attempts++;
+          if (isPlayerReady()) {
+            console.log('✓ Player is now ready, executing queued sync');
+            if (queuedSyncRef.current) {
+              const queued = queuedSyncRef.current;
+              queuedSyncRef.current = null;
+              executeSync(queued.targetTime, queued.isPlaying, queued.timestamp, true);
+            }
+            if (playerReadyCheckRef.current) {
+              clearInterval(playerReadyCheckRef.current);
+              playerReadyCheckRef.current = null;
+            }
+          } else if (attempts >= maxAttempts) {
+            console.log('⏰ Player ready check timed out');
+            if (playerReadyCheckRef.current) {
+              clearInterval(playerReadyCheckRef.current);
+              playerReadyCheckRef.current = null;
+            }
+          }
+        }, 50); // Check every 50ms
+      }
+      
+      return;
+    }
+
+    // Player is ready, execute sync immediately
+    console.log('✓ Player ready, executing sync immediately');
+    executeSync(targetTime, isPlaying, timestamp, false);
+    queuedSyncRef.current = null; // Clear any queued sync
+  },
+  [room, currentUser, isPlayerReady, executeSync]
+);
+```
+
+## Initial Sync on Join
+
+When a guest joins a room with a playing video, they receive immediate sync:
+
+### Server-Side: Immediate Sync
+
+```typescript socket/room-handler.ts:191-201
+// If video is playing, send immediate sync to the newly joined user (if not host)
+if (!isRoomHost && updatedRoom?.videoUrl && updatedRoom.videoState?.isPlaying) {
+  const videoState = updatedRoom.videoState;
+  socket.emit('sync-update', {
+    currentTime: videoState.currentTime,
+    isPlaying: true,
+    timestamp: videoState.lastUpdateTime,
+  });
+  console.log(`Sent immediate sync to newly joined user ${userName}: ${videoState.currentTime.toFixed(2)}s`);
+}
+```
+
+### Client-Side: Initial Sync
+
+```typescript room/[roomId]/page.tsx:153-182
+useEffect(() => {
+  if (!room || !currentUser || currentUser.isHost || !room.videoUrl || !room.videoState) {
+    return;
+  }
+
+  // Create a unique key for this room+user combination
+  const syncKey = `${room.id}-${currentUser.id}`;
+  
+  // Skip if we've already synced for this join
+  if (hasSyncedOnJoinRef.current === syncKey) {
+    return;
+  }
+
+  // Sync regardless of play state - we want to sync paused videos too
+  if (room.videoState.currentTime >= 0) {
+    console.log('Initial sync on join:', {
+      currentTime: room.videoState.currentTime,
+      isPlaying: room.videoState.isPlaying,
+      lastUpdateTime: room.videoState.lastUpdateTime,
+    });
+    
+    // Call syncVideo which will queue if player not ready
+    syncVideo(
+      room.videoState.currentTime,
+      room.videoState.isPlaying,
+      room.videoState.lastUpdateTime
+    );
+    hasSyncedOnJoinRef.current = syncKey;
+  }
+}, [room?.id, room?.videoUrl, room?.videoState?.isPlaying, currentUser?.id, currentUser?.isHost, syncVideo]);
+```
+
+## Sync Flow Diagram
+
+```
+┌─────────────────────────────────────────────────────────────────┐
+│                    Host plays video at 10.0s                     │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  handleYouTubeStateChange(PLAYING)                               │
+│  → socket.emit('play-video', { currentTime: 10.0, roomId })     │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Server validates host permission                                │
+│  → Updates Redis: videoState.isPlaying = true                   │
+│  → Broadcasts: socket.to(roomId).emit('video-played', {...})   │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Guest receives 'video-played' event (50ms later)                │
+│  { currentTime: 10.0, timestamp: 1000 }                         │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  syncVideo(10.0, true, 1000)                                     │
+│  1. calculateCurrentTime():                                      │
+│     - Now = 1050, timestamp = 1000                              │
+│     - Adjusted = 10.0 + (1050 - 1000) / 1000 = 10.05s          │
+│  2. Check drift:                                                │
+│     - Guest player at 9.8s                                      │
+│     - Drift = |9.8 - 10.05| = 0.25s < 1.5s                     │
+│     - Skip seek (within tolerance)                              │
+│  3. Sync play state:                                            │
+│     - player.play()                                             │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  5 seconds later: Host sends periodic sync check                 │
+│  → socket.emit('sync-check', { currentTime: 15.0, ... })       │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Server broadcasts: sync-update to all guests                    │
+│  Guest receives: { currentTime: 15.0, timestamp: 6000 }        │
+└─────────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────────┐
+│  Guest re-syncs (drift check):                                   │
+│  - Adjusted = 15.0 + network delay                              │
+│  - If drift > 1.5s → seek to adjusted time                     │
+│  - Otherwise → continue playing                                 │
+└─────────────────────────────────────────────────────────────────┘
+```
+
+## Performance Considerations
+
+<AccordionGroup>
+  <Accordion title="Network Latency">
+    The `calculateCurrentTime` function compensates for network delay by using timestamps:
+    
+    - Server includes `Date.now()` in every sync event
+    - Client calculates elapsed time since that timestamp
+    - Accounts for round-trip time automatically
+    
+    **Typical Latency:**
+    - Local: < 10ms
+    - Same region: 20-50ms
+    - Cross-region: 100-300ms
+  </Accordion>
+
+  <Accordion title="Sync Frequency">
+    **Why 5 seconds?**
+    
+    - Frequent enough to catch drift from buffering or manual seeks
+    - Infrequent enough to avoid network/server overhead
+    - Balance between responsiveness and performance
+    
+    **Trade-offs:**
+    - **1 second:** Too many events, unnecessary load
+    - **10 seconds:** Guests can drift too far before correction
+    - **5 seconds:** Optimal balance
+  </Accordion>
+
+  <Accordion title="Player Ready Checks">
+    The player ready polling runs every 50ms for up to 10 seconds:
+    
+    ```typescript
+    const maxAttempts = 200; // Max 10 seconds (200 * 50ms)
+    playerReadyCheckRef.current = setInterval(() => {
+      if (isPlayerReady()) {
+        // Execute queued sync
+      }
+    }, 50);
+    ```
+    
+    **Why polling?**
+    - YouTube IFrame API doesn't provide a ready callback for metadata
+    - Must check if `getDuration()` returns valid value
+    - 50ms interval is imperceptible to users
+  </Accordion>
+</AccordionGroup>
+
+## Troubleshooting Sync Issues
+
+<Warning>
+  **Common Issues:**
+  
+  1. **Guest constantly seeking:** Drift threshold too low or time calculation error
+  2. **Guest out of sync:** Host not sending sync checks or guest not receiving events
+  3. **Video not syncing on join:** Player not ready or queued sync not executing
+  4. **Feedback loops:** Guest syncing to own control actions
+</Warning>
+
+### Debug Logging
+
+The sync code includes extensive logging:
+
+```typescript
+console.log(`Periodic sync check: ${currentTime.toFixed(2)}s, playing: ${isPlaying}`);
+console.log('Received sync update from host:', { currentTime, isPlaying, timestamp });
+console.log(`Syncing video: ${syncDiff.toFixed(2)}s difference, seeking to ${adjustedTime.toFixed(2)}s`);
+```
+
+Check browser console for sync events and drift measurements.
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Backend Architecture" icon="server" href="/architecture/backend">
+    Learn how the server handles sync events
+  </Card>
+  
+  <Card title="Frontend Architecture" icon="react" href="/architecture/frontend">
+    Explore the React hooks that power synchronization
+  </Card>
+  
+  <Card title="Development Guide" icon="hammer" href="/deployment/local-development">
+    Set up your environment and test sync locally
+  </Card>
+  
+  <Card title="Architecture Overview" icon="diagram-project" href="/architecture/overview">
+    Return to the architecture overview
+  </Card>
+</CardGroup>

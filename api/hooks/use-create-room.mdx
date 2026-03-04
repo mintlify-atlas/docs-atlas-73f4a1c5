@@ -1,0 +1,320 @@
+---
+title: 'useCreateRoom'
+description: 'React hook for handling room creation with form validation'
+---
+
+## Overview
+
+The `useCreateRoom` hook manages the room creation flow, including:
+
+- Form state management for host name input
+- Socket connection status monitoring
+- Room creation with server communication
+- Host token storage in session storage
+- Automatic navigation to created room
+- Error handling and validation with Zod
+- Analytics tracking with Umami
+
+This hook provides a complete solution for the room creation page, handling all aspects from user input to server response.
+
+## Import
+
+```typescript
+import { useCreateRoom } from '@/hooks/use-create-room';
+```
+
+## Parameters
+
+This hook takes no parameters.
+
+## Return Value
+
+Returns an object with form state and handlers:
+
+<ResponseField name="hostName" type="string">
+  The current host name input value
+</ResponseField>
+
+<ResponseField name="setHostName" type="(name: string) => void">
+  Update the host name input value
+</ResponseField>
+
+<ResponseField name="isLoading" type="boolean">
+  Whether the room creation request is in progress
+</ResponseField>
+
+<ResponseField name="error" type="string">
+  Validation or server error message to display
+</ResponseField>
+
+<ResponseField name="isConnected" type="boolean">
+  Whether the socket is connected to the server
+</ResponseField>
+
+<ResponseField name="isInitialized" type="boolean">
+  Whether the socket has finished initialization
+</ResponseField>
+
+<ResponseField name="handleCreateRoom" type="(e: React.FormEvent) => Promise<void>">
+  Form submit handler that validates input and creates the room
+  
+  **Parameters:**
+  - `e`: Form event (automatically prevents default)
+</ResponseField>
+
+## Usage Example
+
+```typescript
+'use client';
+
+import { useCreateRoom } from '@/hooks/use-create-room';
+
+export default function CreateRoomPage() {
+  const {
+    hostName,
+    setHostName,
+    isLoading,
+    error,
+    isConnected,
+    isInitialized,
+    handleCreateRoom,
+  } = useCreateRoom();
+
+  return (
+    <div className="create-room-page">
+      <h1>Create a Room</h1>
+      
+      {!isInitialized && (
+        <div>Initializing...</div>
+      )}
+      
+      {!isConnected && isInitialized && (
+        <div>Connecting to server...</div>
+      )}
+      
+      <form onSubmit={handleCreateRoom}>
+        <div>
+          <label htmlFor="hostName">Your Name</label>
+          <input
+            id="hostName"
+            type="text"
+            value={hostName}
+            onChange={(e) => setHostName(e.target.value)}
+            placeholder="Enter your name"
+            disabled={isLoading || !isConnected}
+            required
+          />
+        </div>
+        
+        {error && (
+          <div className="error">{error}</div>
+        )}
+        
+        <button
+          type="submit"
+          disabled={isLoading || !isConnected || !hostName.trim()}
+        >
+          {isLoading ? 'Creating...' : 'Create Room'}
+        </button>
+      </form>
+    </div>
+  );
+}
+```
+
+## Form Validation
+
+The hook uses Zod schema validation for the host name:
+
+```typescript
+// From @/types/schemas
+const UserNameSchema = z
+  .string()
+  .min(2, 'Name must be at least 2 characters long')
+  .max(50, 'Name must be 50 characters or less')
+  .regex(
+    /^[a-zA-Z0-9\s\-_.!?]+$/,
+    'Name can only contain letters, numbers, spaces, and basic punctuation (- _ . ! ?)'
+  );
+```
+
+### Validation Rules
+
+- **Minimum length**: 2 characters
+- **Maximum length**: 50 characters
+- **Allowed characters**: Letters, numbers, spaces, and `- _ . ! ?`
+- **Automatic trimming**: Leading and trailing whitespace is removed
+
+### Validation Errors
+
+Validation errors are displayed in the `error` field and include:
+
+- "Name must be at least 2 characters long"
+- "Name must be 50 characters or less"
+- "Name can only contain letters, numbers, spaces, and basic punctuation (- _ . ! ?)"
+- "Not connected to server. Please try again." (connection error)
+- Server-specific errors from the backend
+
+## Room Creation Flow
+
+### 1. Form Submission
+
+When `handleCreateRoom` is called:
+
+```typescript
+const handleCreateRoom = async (e: React.FormEvent) => {
+  e.preventDefault();
+  setError('');
+  
+  // Validate input with Zod
+  const validatedData = CreateRoomDataSchema.parse({
+    hostName: hostName.trim(),
+  });
+  
+  // Check socket connection
+  if (!socket || !isConnected) {
+    setError('Not connected to server. Please try again.');
+    return;
+  }
+  
+  setIsLoading(true);
+  
+  // Listen for room creation response
+  socket.once('room-created', ({ roomId, hostToken }) => {
+    // Store host credentials
+    roomSessionStorage.setRoomCreator({
+      roomId,
+      hostName: validatedData.hostName,
+      hostToken,
+    });
+    
+    // Navigate to room
+    router.push(`/room/${roomId}`);
+  });
+  
+  // Emit create room event
+  socket.emit('create-room', validatedData);
+};
+```
+
+### 2. Server Response
+
+The server responds with one of:
+
+- **Success**: `room-created` event with `{ roomId, hostToken }`
+- **Error**: `room-error` event with `{ error: string }`
+
+### 3. Session Storage
+
+On success, the hook stores:
+
+```typescript
+roomSessionStorage.setRoomCreator({
+  roomId: string;        // 6-character room ID
+  hostName: string;      // Validated host name
+  hostToken: string;     // UUID for host authentication
+});
+```
+
+This allows [useRoom](/api/hooks/use-room) to automatically join as host without prompting again.
+
+### 4. Navigation
+
+The hook navigates to `/room/{roomId}` where [useRoom](/api/hooks/use-room) detects the stored credentials and joins automatically.
+
+## Analytics Tracking
+
+The hook tracks these Umami events:
+
+```typescript
+// On successful room creation
+trackUmamiEvent('room_created', {
+  roomId: string,
+});
+
+// On room creation error
+trackUmamiEvent('room_create_error', {
+  message: string,
+});
+```
+
+## Socket Events
+
+**Emitted:**
+
+```typescript
+socket.emit('create-room', {
+  hostName: string,  // Validated host name (2-50 chars)
+});
+```
+
+**Listened to:**
+
+```typescript
+// Success response
+socket.on('room-created', (data: {
+  roomId: string,      // 6-character room ID
+  room: Room,          // Complete room object
+  hostToken: string,   // UUID for host authentication
+}) => {
+  // Handle success
+});
+
+// Error response
+socket.on('room-error', (data: {
+  error: string,       // Error message
+}) => {
+  // Handle error
+});
+```
+
+## Type Definitions
+
+```typescript
+interface UseCreateRoomReturn {
+  hostName: string;
+  setHostName: (name: string) => void;
+  isLoading: boolean;
+  error: string;
+  isConnected: boolean;
+  isInitialized: boolean;
+  handleCreateRoom: (e: React.FormEvent) => Promise<void>;
+}
+
+interface CreateRoomData {
+  hostName: string;
+}
+
+interface RoomCreatedResponse {
+  roomId: string;
+  room: Room;
+  hostToken: string;
+}
+
+interface ErrorResponse {
+  error: string;
+}
+```
+
+## Error Handling
+
+The hook handles errors at multiple levels:
+
+1. **Connection Errors**: Checks socket connection before submission
+2. **Validation Errors**: Catches Zod validation errors and displays first issue
+3. **Server Errors**: Listens for `room-error` event and displays error message
+4. **Network Errors**: Handles unexpected errors with generic message
+
+## Best Practices
+
+- Disable form submission while loading or disconnected
+- Show connection status to users (initializing, connecting, connected)
+- Clear error messages on new submission attempts
+- Provide real-time validation feedback in the UI
+- Trim whitespace from input before validation
+
+## Related Hooks
+
+- [useJoinRoom](/api/hooks/use-join-room) - Handles room joining flow
+- [useRoom](/api/hooks/use-room) - Manages room state after creation
+- [useSocket](/api/hooks/use-socket) - Provides socket connection

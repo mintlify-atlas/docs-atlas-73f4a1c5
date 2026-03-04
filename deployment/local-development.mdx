@@ -1,0 +1,335 @@
+---
+title: 'Local Development'
+description: 'Set up Watch N Chill for local development with hot reload'
+icon: 'code'
+---
+
+## Prerequisites
+
+Before starting local development, ensure you have the following installed:
+
+<Steps>
+  <Step title="Node.js 20+">
+    Watch N Chill requires Node.js 20 or later.
+    
+    ```bash
+    node --version
+    # Should output v20.x.x or higher
+    ```
+    
+    Download from [nodejs.org](https://nodejs.org/) or use a version manager like [nvm](https://github.com/nvm-sh/nvm).
+  </Step>
+  
+  <Step title="Package Manager">
+    Install either **Bun** (recommended) or use **npm** that comes with Node.js.
+    
+    **Bun (recommended for faster installs):**
+    ```bash
+    curl -fsSL https://bun.sh/install | bash
+    ```
+    
+    **npm** is included with Node.js installation.
+  </Step>
+  
+  <Step title="Redis">
+    You need a Redis instance running. Choose one of these options:
+    
+    <Tabs>
+      <Tab title="Docker (Recommended)">
+        ```bash
+        docker run --name watch-with-redis -p 6379:6379 -d redis:7-alpine
+        ```
+      </Tab>
+      
+      <Tab title="Local Redis Server">
+        **macOS (Homebrew):**
+        ```bash
+        brew install redis
+        brew services start redis
+        ```
+        
+        **Ubuntu/Debian:**
+        ```bash
+        sudo apt-get install redis-server
+        sudo systemctl start redis
+        ```
+      </Tab>
+      
+      <Tab title="Upstash (Cloud)">
+        1. Sign up at [upstash.com](https://upstash.com/)
+        2. Create a new Redis database
+        3. Copy the connection URL
+        4. Set `REDIS_URL` in your `.env.local`
+      </Tab>
+    </Tabs>
+  </Step>
+</Steps>
+
+## Installation
+
+<Steps>
+  <Step title="Clone the Repository">
+    ```bash
+    git clone https://github.com/yourusername/watchnchill.git
+    cd watchnchill
+    ```
+  </Step>
+  
+  <Step title="Install Dependencies">
+    <Tabs>
+      <Tab title="Bun">
+        ```bash
+        bun install
+        ```
+      </Tab>
+      
+      <Tab title="npm">
+        ```bash
+        npm install
+        ```
+      </Tab>
+    </Tabs>
+  </Step>
+  
+  <Step title="Configure Environment">
+    Create a `.env.local` file in the project root:
+    
+    ```bash
+    # Create environment file
+    touch .env.local
+    ```
+    
+    Add your configuration:
+    
+    ```bash .env.local
+    # Redis connection (local Docker)
+    REDIS_URL=redis://localhost:6379
+    
+    # Or Upstash Redis
+    # REDIS_URL=rediss://default:<password>@<subdomain>.upstash.io:6379
+    ```
+    
+    <Note>
+      For local development, only `REDIS_URL` is required. Other variables have sensible defaults.
+    </Note>
+  </Step>
+  
+  <Step title="Start Development Server">
+    <Tabs>
+      <Tab title="Bun">
+        ```bash
+        bun run dev
+        ```
+      </Tab>
+      
+      <Tab title="npm">
+        ```bash
+        npm run dev
+        ```
+      </Tab>
+    </Tabs>
+    
+    You should see:
+    ```bash
+    > Initializing Redis connection...
+    > Redis connected successfully
+    > Ready on http://localhost:3000
+    > Socket.IO server running on path: /api/socket/io
+    ```
+  </Step>
+  
+  <Step title="Open in Browser">
+    Navigate to [http://localhost:3000](http://localhost:3000)
+  </Step>
+</Steps>
+
+## Development Workflow
+
+### Hot Reload
+
+The application uses `tsx` to run the custom server with hot reload:
+
+- **Frontend changes**: Next.js automatically reloads React components
+- **Backend changes**: `tsx` watches `server.ts` and backend files for changes
+- **Socket.IO events**: Restart the dev server to apply Socket.IO handler changes
+
+### Project Structure
+
+```
+watchnchill/
+├── server.ts                 # Custom Next.js + Socket.IO server
+├── src/
+│   ├── app/                 # Next.js App Router pages
+│   │   ├── (landing)/      # Landing page
+│   │   └── room/[roomId]/  # Room page
+│   ├── backend/
+│   │   ├── socket/         # Socket.IO event handlers
+│   │   ├── redis/          # Redis client and repositories
+│   │   └── rate-limit.ts   # Rate limiting logic
+│   ├── components/         # React components
+│   ├── contexts/           # React contexts (Socket, Theme)
+│   └── hooks/              # Custom React hooks
+├── public/                  # Static assets
+└── package.json
+```
+
+### Available Scripts
+
+<CodeGroup>
+
+```bash Development
+# Start dev server with hot reload
+bun run dev        # or: npm run dev
+
+# Run linter
+bun run lint       # or: npm run lint
+
+# Format code with Prettier
+bun run format     # or: npm run format
+
+# Check formatting
+bun run format:check
+```
+
+```bash Building
+# Build for production
+bun run build      # or: npm run build
+
+# Start production server
+bun start          # or: npm start
+```
+
+</CodeGroup>
+
+## Redis Connection Verification
+
+Verify your Redis connection is working:
+
+<CodeGroup>
+
+```bash Docker Redis
+# Check if Redis container is running
+docker ps | grep redis
+
+# Test connection with redis-cli
+docker exec -it watch-with-redis redis-cli ping
+# Should output: PONG
+```
+
+```bash Local Redis
+# Test connection
+redis-cli ping
+# Should output: PONG
+
+# Check Redis is listening
+redis-cli -h localhost -p 6379 ping
+```
+
+```bash Upstash Redis
+# Test with curl (replace with your URL)
+curl https://your-subdomain.upstash.io/ping \
+  -H "Authorization: Bearer YOUR_TOKEN"
+```
+
+</CodeGroup>
+
+## Troubleshooting
+
+### Redis Connection Failed
+
+<Warning>
+  If Redis is unavailable, the application will fall back to in-memory storage for rate limiting, but **room state and chat will not persist**.
+</Warning>
+
+**Check Redis is running:**
+```bash
+# Docker
+docker ps | grep redis
+
+# Local service
+redis-cli ping
+```
+
+**Verify REDIS_URL:**
+```bash
+echo $REDIS_URL
+# Should output: redis://localhost:6379
+```
+
+### Port Already in Use
+
+If port 3000 is already in use:
+
+```bash .env.local
+PORT=3001
+```
+
+Then access the app at `http://localhost:3001`.
+
+### Socket.IO Connection Issues
+
+If Socket.IO fails to connect:
+
+1. Check browser console for errors
+2. Verify Socket.IO path is correct: `/api/socket/io`
+3. Ensure no proxy/firewall is blocking WebSocket connections
+4. Check CORS settings (should auto-configure for localhost in dev)
+
+### Hot Reload Not Working
+
+If changes aren't being picked up:
+
+```bash
+# Restart the dev server
+# Press Ctrl+C and run:
+bun run dev
+```
+
+## Testing Your Changes
+
+<Steps>
+  <Step title="Create a Room">
+    1. Go to [http://localhost:3000](http://localhost:3000)
+    2. Click "Create Room"
+    3. Copy the room ID and host token
+  </Step>
+  
+  <Step title="Join from Another Tab">
+    1. Open a new incognito/private window
+    2. Navigate to the same URL
+    3. Click "Join Room" with the room ID
+  </Step>
+  
+  <Step title="Test Real-time Features">
+    - Set a YouTube video URL as host
+    - Play/pause/seek and verify sync across tabs
+    - Send chat messages
+    - Test typing indicators
+  </Step>
+</Steps>
+
+## Development Best Practices
+
+<Note>
+  - **Rate limiting is disabled** in development mode for easier testing
+  - **CORS is auto-configured** for `localhost:3000` in development
+  - Use browser DevTools Network tab to debug Socket.IO events
+  - Check server console logs for backend debugging
+</Note>
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Environment Variables" icon="gear" href="/deployment/environment-variables">
+    Learn about all available configuration options
+  </Card>
+  <Card title="Docker Setup" icon="docker" href="/deployment/docker">
+    Run the full stack with Docker Compose
+  </Card>
+  <Card title="Production Deployment" icon="rocket" href="/deployment/production">
+    Deploy to production platforms
+  </Card>
+  <Card title="Architecture" icon="diagram-project" href="/architecture/overview">
+    Understand the system architecture
+  </Card>
+</CardGroup>

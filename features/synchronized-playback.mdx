@@ -1,0 +1,192 @@
+---
+title: Synchronized Playback
+description: Real-time video synchronization that keeps all viewers perfectly in sync
+icon: "play"
+---
+
+Watch N Chill's synchronized playback ensures that everyone in your watch party experiences the video at exactly the same moment. No more "wait, what scene are you on?" - the host controls playback and all guests automatically sync to the exact timestamp.
+
+## How It Works
+
+Synchronization happens automatically through WebSocket connections and intelligent sync algorithms that account for network latency and playback drift.
+
+<Note>
+Currently, Watch N Chill supports YouTube videos only. The system uses YouTube's IFrame Player API for precise playback control.
+</Note>
+
+## Host Controls
+
+As a host, you have complete control over video playback:
+
+<Steps>
+  <Step title="Play/Pause">
+    Click the play or pause button on the video player. Your action is instantly broadcast to all participants, and their videos sync to your playback state.
+  </Step>
+  
+  <Step title="Seek to Position">
+    Drag the video progress bar or click to jump to any timestamp. All participants automatically seek to the same position within milliseconds.
+  </Step>
+  
+  <Step title="Buffer Handling">
+    If your video buffers or you need to reload, guests will sync to your current position when playback resumes.
+  </Step>
+</Steps>
+
+### Host Features
+
+- **Instant Broadcast**: Every playback action (play, pause, seek) is immediately sent to all participants
+- **State Tracking**: The system tracks your current timestamp, play/pause state, and last update time
+- **Automatic Sync Checks**: Every 5 seconds, hosts send sync updates to keep everyone aligned
+- **Multiple Hosts**: Rooms support multiple hosts, and any host can control playback
+
+<Tip>
+When you detect a seek operation (jumping to a different timestamp), the system automatically notifies all guests before sending the play command, ensuring smooth synchronization.
+</Tip>
+
+## Guest Experience
+
+Guests automatically receive and apply all playback updates from hosts:
+
+### Automatic Synchronization
+
+When a host performs an action, guests receive real-time updates:
+
+<CardGroup cols={2}>
+  <Card title="Play Event" icon="play">
+    Video automatically starts playing at the exact timestamp specified by the host
+  </Card>
+  <Card title="Pause Event" icon="pause">
+    Video pauses immediately at the current timestamp
+  </Card>
+  <Card title="Seek Event" icon="forward">
+    Video jumps to the new timestamp within 100ms
+  </Card>
+  <Card title="Sync Update" icon="arrows-rotate">
+    Periodic checks ensure drift doesn't exceed 1.5 seconds
+  </Card>
+</CardGroup>
+
+### Join-In-Progress Sync
+
+When you join a room with a video already playing:
+
+1. **Immediate Sync**: You receive the current playback state (timestamp + playing status)
+2. **Time Calculation**: The system calculates the adjusted timestamp based on when the last update was sent
+3. **Smart Start**: Your video seeks to the correct position and begins playing automatically
+
+<Warning>
+If you try to manually control the video as a guest (clicking play/pause), nothing will happen. Only hosts can control playback. Request promotion to host if you need control privileges.
+</Warning>
+
+## Sync Mechanism
+
+### Drift Detection
+
+The synchronization system constantly monitors for drift between the host and guests:
+
+- **Tolerance**: Up to 1.5 seconds of drift is acceptable
+- **Auto-Correction**: If drift exceeds 1.5 seconds, guests automatically resync
+- **Periodic Updates**: Hosts send sync checks every 5 seconds
+
+<Accordion title="Technical: How Time Calculation Works">
+When a sync event is received, the system calculates the current timestamp using:
+
+```typescript
+function calculateCurrentTime(videoState) {
+  if (!videoState.isPlaying) {
+    return videoState.currentTime;
+  }
+  
+  const timeDiff = (Date.now() - videoState.lastUpdateTime) / 1000;
+  return videoState.currentTime + timeDiff;
+}
+```
+
+This accounts for network latency by adjusting the timestamp based on how much time has passed since the host's last update.
+</Accordion>
+
+### Player State Management
+
+The YouTube player can be in different states:
+
+- **UNSTARTED** (-1): Video hasn't loaded yet
+- **ENDED** (0): Video finished playing
+- **PLAYING** (1): Video is currently playing
+- **PAUSED** (2): Video is paused
+- **BUFFERING** (3): Video is loading
+- **CUED** (5): Video is loaded but not started
+
+<Note>
+When syncing to an UNSTARTED or CUED player, the system first seeks to the target timestamp, waits 100ms for the video to load, then begins playback. This prevents sync issues with uninitialized players.
+</Note>
+
+## Player Ready Detection
+
+Before syncing, the system verifies the YouTube player is ready:
+
+<Steps>
+  <Step title="Readiness Check">
+    Attempts to call `getCurrentTime()` and `getDuration()` on the player
+  </Step>
+  
+  <Step title="Queue or Execute">
+    If the player isn't ready, the sync request is queued and checked every 50ms
+  </Step>
+  
+  <Step title="Timeout Protection">
+    After 10 seconds (200 attempts), the sync request times out to prevent infinite waiting
+  </Step>
+  
+  <Step title="Execution">
+    Once ready, the queued sync executes immediately with the latest sync data
+  </Step>
+</Steps>
+
+## Feedback Loop Prevention
+
+The system includes safeguards to prevent control feedback loops:
+
+- **Action Tracking**: Each playback action stores the user ID and timestamp
+- **Skip Window**: If you receive a sync update within 500ms of performing an action, it's ignored
+- **User Comparison**: Sync updates from your own actions are filtered out
+
+This ensures that when a host presses play, they don't immediately receive their own sync update and re-trigger the action.
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Stable Connection" icon="wifi">
+    Ensure all participants have stable internet connections for smooth synchronization
+  </Card>
+  <Card title="Limit Seeking" icon="hand">
+    Avoid rapidly seeking back and forth, as it can cause temporary desync
+  </Card>
+  <Card title="Wait for Buffers" icon="hourglass">
+    If your video is buffering, wait for it to complete before resuming playback
+  </Card>
+  <Card title="Reload if Needed" icon="rotate">
+    If sync seems broken, refresh your browser - you'll rejoin with current state
+  </Card>
+</CardGroup>
+
+## Troubleshooting
+
+### Video Won't Sync
+
+1. **Check Host Status**: Verify you're actually a host if trying to control playback
+2. **Refresh Page**: Sometimes the YouTube API needs to be reinitialized
+3. **Network Issues**: Poor connections can delay sync updates
+
+### Constant Drift
+
+If you're constantly out of sync:
+
+- Your network latency may be high
+- The video quality might be too high for your connection
+- Try lowering video quality in YouTube's settings
+
+### Controls Don't Work
+
+<Warning>
+If clicking play/pause does nothing, you're likely a guest. Ask a host to promote you, or use the "Request Controls" feature in the chat.
+</Warning>

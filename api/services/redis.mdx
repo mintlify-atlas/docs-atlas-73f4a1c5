@@ -1,0 +1,320 @@
+---
+title: Redis services
+description: Redis-backed repositories for room and chat persistence
+---
+
+Watch N Chill uses Redis to persist room state, user data, and chat messages. The Redis layer is organized into two main repositories accessed through a singleton service.
+
+## RedisService
+
+The `RedisService` class provides centralized access to Redis repositories.
+
+```typescript src/backend/redis/index.ts
+export class RedisService {
+  private static instance: RedisService;
+
+  public readonly rooms: RoomRepository;
+  public readonly chat: ChatRepository;
+
+  private constructor() {
+    this.rooms = RoomRepository.getInstance();
+    this.chat = ChatRepository.getInstance();
+  }
+
+  static getInstance(): RedisService {
+    if (!RedisService.instance) {
+      RedisService.instance = new RedisService();
+    }
+    return RedisService.instance;
+  }
+}
+
+export const redisService = RedisService.getInstance();
+```
+
+### Usage
+
+```typescript
+import { redisService } from '@/backend/redis';
+
+// Access room operations
+const room = await redisService.rooms.getRoom(roomId);
+
+// Access chat operations
+const messages = await redisService.chat.getMessages(roomId);
+```
+
+## RoomRepository
+
+Manages room data, user memberships, and video state in Redis.
+
+### Data structures
+
+<Accordion title="Room interface">
+```typescript
+interface Room {
+  id: string;
+  hostId: string;
+  hostName: string;
+  hostToken?: string;
+  videoUrl: string | null;
+  videoType: 'youtube' | null;
+  videoState: VideoState;
+  users: User[];
+  createdAt: Date;
+}
+
+interface VideoState {
+  isPlaying: boolean;
+  currentTime: number;
+  duration: number;
+  lastUpdateTime: number;
+}
+
+interface User {
+  id: string;
+  name: string;
+  isHost: boolean;
+  joinedAt: Date;
+}
+```
+</Accordion>
+
+### Methods
+
+<ParamField path="createRoom" type="(room: Room) => Promise<void>">
+  Stores a new room in Redis with 24-hour TTL and adds it to the active rooms set.
+  
+  ```typescript src/backend/redis/room-handler.ts:14-17
+  async createRoom(room: Room): Promise<void> {
+    await redis.setex(`room:${room.id}`, 86400, JSON.stringify(room));
+    await redis.sadd('active-rooms', room.id);
+  }
+  ```
+</ParamField>
+
+<ParamField path="getRoom" type="(roomId: string) => Promise<Room | null>">
+  Retrieves a room by ID, parsing JSON and converting date strings back to Date objects.
+  
+  ```typescript src/backend/redis/room-handler.ts:19-32
+  async getRoom(roomId: string): Promise<Room | null> {
+    const roomData = await redis.get(`room:${roomId}`);
+    if (!roomData) return null;
+
+    const room = JSON.parse(roomData) as Room;
+    room.createdAt = new Date(room.createdAt);
+    room.users = room.users.map(user => ({
+      ...user,
+      joinedAt: new Date(user.joinedAt),
+    }));
+
+    return room;
+  }
+  ```
+</ParamField>
+
+<ParamField path="updateRoom" type="(roomId: string, room: Room) => Promise<void>">
+  Updates an existing room's data in Redis, refreshing the 24-hour TTL.
+</ParamField>
+
+<ParamField path="deleteRoom" type="(roomId: string) => Promise<void>">
+  Removes a room from Redis and the active rooms set.
+  
+  ```typescript src/backend/redis/room-handler.ts:38-41
+  async deleteRoom(roomId: string): Promise<void> {
+    await redis.del(`room:${roomId}`);
+    await redis.srem('active-rooms', roomId);
+  }
+  ```
+</ParamField>
+
+<ParamField path="roomExists" type="(roomId: string) => Promise<boolean>">
+  Checks if a room exists in Redis.
+</ParamField>
+
+<ParamField path="addUserToRoom" type="(roomId: string, user: User) => Promise<void>">
+  Adds a user to a room, removing any existing user with the same ID (handles rejoin cases).
+  
+  ```typescript src/backend/redis/room-handler.ts:47-56
+  async addUserToRoom(roomId: string, user: User): Promise<void> {
+    const room = await this.getRoom(roomId);
+    if (!room) throw new Error('Room not found');
+
+    room.users = room.users.filter(u => u.id !== user.id);
+    room.users.push(user);
+
+    await this.updateRoom(roomId, room);
+  }
+  ```
+</ParamField>
+
+<ParamField path="removeUserFromRoom" type="(roomId: string, userId: string) => Promise<void>">
+  Removes a user from a room. If the room becomes empty, it's deleted. If the host leaves and users remain, a new host is automatically assigned.
+  
+  ```typescript src/backend/redis/room-handler.ts:58-77
+  async removeUserFromRoom(roomId: string, userId: string): Promise<void> {
+    const room = await this.getRoom(roomId);
+    if (!room) return;
+
+    room.users = room.users.filter(u => u.id !== userId);
+
+    if (room.users.length === 0) {
+      await this.deleteRoom(roomId);
+    } else {
+      if (room.hostId === userId && room.users.length > 0) {
+        const newHost = room.users[0];
+        room.hostId = newHost.id;
+        room.hostName = newHost.name;
+        newHost.isHost = true;
+      }
+      await this.updateRoom(roomId, room);
+    }
+  }
+  ```
+</ParamField>
+
+<ParamField path="updateVideoState" type="(roomId: string, videoState: VideoState) => Promise<void>">
+  Updates the video playback state (playing, paused, current time, etc.).
+</ParamField>
+
+<ParamField path="setVideoUrl" type="(roomId: string, videoUrl: string, videoType: 'youtube') => Promise<void>">
+  Sets a new video URL and resets the video state to initial values.
+  
+  ```typescript src/backend/redis/room-handler.ts:87-100
+  async setVideoUrl(roomId: string, videoUrl: string, videoType: 'youtube'): Promise<void> {
+    const room = await this.getRoom(roomId);
+    if (!room) throw new Error('Room not found');
+
+    room.videoUrl = videoUrl;
+    room.videoType = videoType;
+    room.videoState = {
+      isPlaying: false,
+      currentTime: 0,
+      duration: 0,
+      lastUpdateTime: Date.now(),
+    };
+    await this.updateRoom(roomId, room);
+  }
+  ```
+</ParamField>
+
+### Redis key structure
+
+<CardGroup cols={2}>
+  <Card title="Room data" icon="database">
+    **Key**: `room:{roomId}`
+    
+    **Type**: String (JSON)
+    
+    **TTL**: 24 hours
+    
+    Stores complete room state including users, video URL, and playback state.
+  </Card>
+  
+  <Card title="Active rooms set" icon="list">
+    **Key**: `active-rooms`
+    
+    **Type**: Set
+    
+    **TTL**: None
+    
+    Tracks all currently active room IDs for cleanup and monitoring.
+  </Card>
+</CardGroup>
+
+## ChatRepository
+
+Manages chat message history for each room.
+
+### Data structures
+
+```typescript
+interface ChatMessage {
+  id: string;
+  roomId: string;
+  userId: string;
+  userName: string;
+  message: string;
+  timestamp: number;
+}
+```
+
+### Methods
+
+<ParamField path="addMessage" type="(message: ChatMessage) => Promise<void>">
+  Adds a message to the room's chat history, maintaining only the last 20 messages.
+  
+  ```typescript src/backend/redis/chat-handler.ts:29-37
+  async addMessage(message: ChatMessage): Promise<void> {
+    const key = `chat:${message.roomId}`;
+    await redis.rpush(key, JSON.stringify(message));
+    await redis.ltrim(key, -20, -1); // Keep last 20 messages
+    await redis.expire(key, 86400); // 24 hours TTL
+  }
+  ```
+  
+  <Note>Chat history is limited to the last 20 messages to keep memory usage bounded.</Note>
+</ParamField>
+
+<ParamField path="getMessages" type="(roomId: string) => Promise<ChatMessage[]>">
+  Retrieves all stored messages for a room (up to 20).
+  
+  ```typescript src/backend/redis/chat-handler.ts:39-47
+  async getMessages(roomId: string): Promise<ChatMessage[]> {
+    const key = `chat:${roomId}`;
+    const messages = await redis.lrange(key, 0, -1);
+    return messages.map(msg => JSON.parse(msg));
+  }
+  ```
+</ParamField>
+
+<ParamField path="clearMessages" type="(roomId: string) => Promise<void>">
+  Deletes all chat messages for a room. Called when a room is closed.
+  
+  ```typescript src/backend/redis/chat-handler.ts:49-52
+  async clearMessages(roomId: string): Promise<void> {
+    const key = `chat:${roomId}`;
+    await redis.del(key);
+  }
+  ```
+</ParamField>
+
+### Redis key structure
+
+<Card title="Chat messages" icon="comments">
+  **Key**: `chat:{roomId}`
+  
+  **Type**: List (JSON messages)
+  
+  **TTL**: 24 hours
+  
+  **Max size**: 20 messages (oldest messages are trimmed)
+  
+  Stores the most recent chat messages for a room, automatically pruned to the last 20 entries.
+</Card>
+
+## TTL and cleanup
+
+All Redis keys use a 24-hour TTL to ensure automatic cleanup of abandoned rooms:
+
+- Room data expires 24 hours after last update
+- Chat messages expire 24 hours after creation
+- Socket connection counters expire after 1 hour
+- Rate limit keys expire after the rate limit window
+
+<Warning>
+  When a room's TTL expires, both the room data and associated chat history are lost. Users cannot rejoin expired rooms.
+</Warning>
+
+## Redis configuration
+
+The Redis client is initialized from the `REDIS_URL` environment variable:
+
+```typescript src/backend/redis/client.ts
+import IORedis from 'ioredis';
+
+const redisUrl = process.env.REDIS_URL || 'redis://localhost:6379';
+export const redis = new IORedis(redisUrl);
+```
+
+See [Environment variables](/deployment/environment-variables) for Redis connection configuration options.

@@ -1,0 +1,322 @@
+---
+title: 'useVideoSync'
+description: 'React hook for synchronizing video playback across room participants'
+---
+
+## Overview
+
+The `useVideoSync` hook manages real-time video synchronization between all users in a room. It handles:
+
+- Video playback state synchronization (play, pause, seek)
+- Time drift correction to keep all viewers in sync
+- Host-only controls with guest protection
+- YouTube player state management
+- Periodic sync checks for hosts
+- Queued synchronization when player is not ready
+
+This hook works in conjunction with [useRoom](/api/hooks/use-room) to provide a seamless synchronized viewing experience.
+
+## Import
+
+```typescript
+import { useVideoSync } from '@/hooks/use-video-sync';
+import { YouTubePlayerRef } from '@/components/video/youtube-player';
+```
+
+## Parameters
+
+<ParamField path="room" type="Room | null" required>
+  The current room object from [useRoom](/api/hooks/use-room)
+</ParamField>
+
+<ParamField path="currentUser" type="User | null" required>
+  The current user object from [useRoom](/api/hooks/use-room)
+</ParamField>
+
+<ParamField path="roomId" type="string" required>
+  The unique 6-character room identifier
+</ParamField>
+
+<ParamField path="youtubePlayerRef" type="React.RefObject<YouTubePlayerRef | null>" required>
+  Reference to the YouTube player component for controlling playback
+</ParamField>
+
+## Return Value
+
+Returns an object with video control and synchronization functions:
+
+<ResponseField name="syncVideo" type="(targetTime: number, isPlaying: boolean | null, timestamp: number) => void">
+  Synchronize the local player to match the provided state. Automatically queues sync if player is not ready.
+  
+  **Parameters:**
+  - `targetTime`: Target playback time in seconds
+  - `isPlaying`: Whether video should be playing (`true`), paused (`false`), or no state change (`null`)
+  - `timestamp`: Server timestamp when the state was captured (for drift calculation)
+</ResponseField>
+
+<ResponseField name="startSyncCheck" type="() => void">
+  Start periodic sync checks (every 5 seconds). Only hosts should call this. Emits current playback state to keep all viewers synchronized.
+</ResponseField>
+
+<ResponseField name="stopSyncCheck" type="() => void">
+  Stop periodic sync checks. Called when user is no longer host or leaves room.
+</ResponseField>
+
+<ResponseField name="handleVideoPlay" type="() => void">
+  Handle video play action. Host-only function that emits `play-video` event with current time.
+</ResponseField>
+
+<ResponseField name="handleVideoPause" type="() => void">
+  Handle video pause action. Host-only function that emits `pause-video` event with current time.
+</ResponseField>
+
+<ResponseField name="handleVideoSeek" type="() => void">
+  Handle video seek action. Host-only function that emits `seek-video` event with new time.
+</ResponseField>
+
+<ResponseField name="handleYouTubeStateChange" type="(state: number) => void">
+  Handle YouTube player state changes. Host-only function that automatically detects and emits play, pause, and seek events.
+  
+  **Parameters:**
+  - `state`: YouTube player state constant (see `YT_STATES`)
+</ResponseField>
+
+<ResponseField name="handleSetVideo" type="(videoUrl: string) => void">
+  Set a new video URL for the room. Host-only function that emits `set-video` event.
+  
+  **Parameters:**
+  - `videoUrl`: Full YouTube video URL
+</ResponseField>
+
+<ResponseField name="handleVideoControlAttempt" type="() => void">
+  Callback for when a non-host attempts to control video. Can be used to show feedback to the user.
+</ResponseField>
+
+## Usage Example
+
+```typescript
+'use client';
+
+import { useRef, useEffect } from 'react';
+import { useRoom } from '@/hooks/use-room';
+import { useVideoSync } from '@/hooks/use-video-sync';
+import { YouTubePlayer, YouTubePlayerRef } from '@/components/video/youtube-player';
+import { useParams } from 'next/navigation';
+
+export default function RoomPage() {
+  const params = useParams();
+  const roomId = params.roomId as string;
+  const youtubePlayerRef = useRef<YouTubePlayerRef | null>(null);
+  
+  const { room, currentUser } = useRoom({ roomId });
+  
+  const {
+    syncVideo,
+    startSyncCheck,
+    stopSyncCheck,
+    handleVideoPlay,
+    handleVideoPause,
+    handleVideoSeek,
+    handleYouTubeStateChange,
+    handleSetVideo,
+  } = useVideoSync({
+    room,
+    currentUser,
+    roomId,
+    youtubePlayerRef,
+  });
+
+  // Start periodic sync for hosts
+  useEffect(() => {
+    if (currentUser?.isHost && room?.videoUrl) {
+      startSyncCheck();
+      return () => stopSyncCheck();
+    }
+  }, [currentUser?.isHost, room?.videoUrl, startSyncCheck, stopSyncCheck]);
+
+  // Listen for sync events from server
+  useEffect(() => {
+    if (!socket) return;
+
+    const handleSyncUpdate = ({ currentTime, isPlaying, timestamp }) => {
+      syncVideo(currentTime, isPlaying, timestamp);
+    };
+
+    socket.on('sync-update', handleSyncUpdate);
+    return () => socket.off('sync-update', handleSyncUpdate);
+  }, [socket, syncVideo]);
+
+  if (!room || !currentUser) {
+    return <div>Loading...</div>;
+  }
+
+  return (
+    <div>
+      {currentUser.isHost && (
+        <div className="host-controls">
+          <input
+            type="text"
+            placeholder="Enter YouTube URL"
+            onKeyDown={(e) => {
+              if (e.key === 'Enter') {
+                handleSetVideo(e.currentTarget.value);
+              }
+            }}
+          />
+        </div>
+      )}
+      
+      {room.videoUrl && (
+        <YouTubePlayer
+          ref={youtubePlayerRef}
+          videoUrl={room.videoUrl}
+          onStateChange={handleYouTubeStateChange}
+          onPlay={handleVideoPlay}
+          onPause={handleVideoPause}
+          onSeek={handleVideoSeek}
+          disabled={!currentUser.isHost}
+        />
+      )}
+    </div>
+  );
+}
+```
+
+## Sync Mechanism
+
+### Time Drift Calculation
+
+The hook uses `calculateCurrentTime` utility to account for network latency and time drift:
+
+```typescript
+// Adjusts target time based on how long ago the state was captured
+const adjustedTime = calculateCurrentTime({
+  currentTime: targetTime,
+  isPlaying: isPlaying ?? false,
+  lastUpdateTime: timestamp,
+});
+```
+
+For playing videos, this adds the elapsed time since the timestamp to keep sync accurate.
+
+### Sync Thresholds
+
+- **Normal Sync**: Syncs if time difference > 1.5 seconds
+- **Initial Sync**: Always syncs when joining a room (queued sync)
+- **Feedback Loop Prevention**: Skips sync for 500ms after user performs an action
+
+### Player Readiness
+
+When `syncVideo` is called but the player is not ready:
+
+1. Sync request is queued
+2. Player readiness is checked every 50ms
+3. Once ready (up to 10 seconds), queued sync is executed
+4. This ensures sync works even when joining a room with video already playing
+
+### Periodic Sync Checks (Hosts Only)
+
+Hosts emit sync checks every 5 seconds containing:
+
+- Current playback time
+- Playing/paused state
+- Timestamp for drift calculation
+
+This keeps all viewers synchronized even if they experience buffering or temporary connection issues.
+
+## YouTube Player Integration
+
+The hook handles YouTube player state transitions:
+
+### Player States
+
+```typescript
+import { YT_STATES } from '@/components/video/youtube-player';
+
+// YT_STATES.UNSTARTED - Video not loaded
+// YT_STATES.ENDED - Video finished
+// YT_STATES.PLAYING - Currently playing
+// YT_STATES.PAUSED - Currently paused
+// YT_STATES.BUFFERING - Loading/buffering
+// YT_STATES.CUED - Video loaded but not started
+```
+
+### State Change Handling
+
+For hosts, `handleYouTubeStateChange` automatically:
+
+- Detects seek operations by comparing time difference > 1 second
+- Emits play/pause events on state change
+- Handles seek during buffering
+- Prevents duplicate events with action tracking
+
+## Host vs Guest Behavior
+
+### Host Capabilities
+
+- Control video playback (play, pause, seek)
+- Set new video URLs
+- Emit periodic sync checks
+- All control handlers are active
+
+### Guest Behavior
+
+- Receive and apply sync updates
+- Cannot control video directly
+- Player controls should be disabled via `disabled` prop
+- Automatically syncs to host's playback state
+
+## Type Definitions
+
+```typescript
+interface UseVideoSyncOptions {
+  room: Room | null;
+  currentUser: User | null;
+  roomId: string;
+  youtubePlayerRef: React.RefObject<YouTubePlayerRef | null>;
+}
+
+interface UseVideoSyncReturn {
+  syncVideo: (targetTime: number, isPlaying: boolean | null, timestamp: number) => void;
+  startSyncCheck: () => void;
+  stopSyncCheck: () => void;
+  handleVideoPlay: () => void;
+  handleVideoPause: () => void;
+  handleVideoSeek: () => void;
+  handleYouTubeStateChange: (state: number) => void;
+  handleSetVideo: (videoUrl: string) => void;
+  handleVideoControlAttempt: () => void;
+}
+
+interface YouTubePlayerRef {
+  play: () => void;
+  pause: () => void;
+  seekTo: (time: number) => void;
+  getCurrentTime: () => number;
+  getDuration: () => number;
+  getPlayerState: () => number;
+}
+```
+
+## Socket Events
+
+The hook interacts with these socket events:
+
+**Emitted by hook:**
+- `play-video`: { roomId, currentTime }
+- `pause-video`: { roomId, currentTime }
+- `seek-video`: { roomId, currentTime }
+- `set-video`: { roomId, videoUrl }
+- `sync-check`: { roomId, currentTime, isPlaying, timestamp }
+
+**Received (typically handled in room page):**
+- `sync-update`: { currentTime, isPlaying, timestamp }
+- `video-played`: { currentTime, timestamp }
+- `video-paused`: { currentTime, timestamp }
+- `video-seeked`: { currentTime, timestamp }
+- `video-set`: { videoUrl, videoType }
+
+## Related Hooks
+
+- [useRoom](/api/hooks/use-room) - Manages room state and user interactions
+- [useSocket](/api/hooks/use-socket) - Provides socket connection

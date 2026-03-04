@@ -1,0 +1,208 @@
+---
+title: 'Environment Variables'
+description: 'Configuration reference for all environment variables used in Watch N Chill'
+icon: 'gear'
+---
+
+## Overview
+
+Watch N Chill uses environment variables to configure Redis connections, CORS settings, rate limiting, and server behavior. All variables are optional with sensible defaults for local development.
+
+## Redis Configuration
+
+<ParamField path="REDIS_URL" type="string" default="redis://localhost:6379">
+  Redis connection URL for room state, chat history, and rate limiting.
+  
+  **Local development:**
+  ```bash
+  REDIS_URL=redis://localhost:6379
+  ```
+  
+  **Upstash Redis (production):**
+  ```bash
+  REDIS_URL=rediss://default:<password>@<your-subdomain>.upstash.io:6379
+  ```
+  
+  <Note>
+    The application automatically detects Upstash URLs (containing `upstash.io`) and configures TLS accordingly.
+  </Note>
+</ParamField>
+
+## Server Configuration
+
+<ParamField path="NODE_ENV" type="string" default="development">
+  Node.js environment mode. Set to `production` for production deployments.
+  
+  ```bash
+  NODE_ENV=production
+  ```
+  
+  <Warning>
+    Rate limiting is only enforced when `NODE_ENV=production`. Development mode disables rate limiting for easier testing.
+  </Warning>
+</ParamField>
+
+<ParamField path="PORT" type="number" default="3000">
+  HTTP server port for the application.
+  
+  ```bash
+  PORT=3000
+  ```
+</ParamField>
+
+<ParamField path="HOSTNAME" type="string" default="localhost (dev) | 0.0.0.0 (prod)">
+  Hostname the server binds to. Automatically set based on `NODE_ENV`.
+  
+  ```bash
+  HOSTNAME=0.0.0.0
+  ```
+</ParamField>
+
+## CORS Configuration
+
+<ParamField path="ALLOWED_ORIGINS" type="string" default="http://localhost:3000 (dev)">
+  Comma-separated list of allowed origins for Socket.IO CORS.
+  
+  **Required in production** to enable cross-origin Socket.IO connections.
+  
+  ```bash
+  ALLOWED_ORIGINS=https://watchnchill.app,https://www.watchnchill.app
+  ```
+  
+  <Note>
+    In development mode, `http://localhost:3000` is automatically allowed. In production, you must explicitly set this variable.
+  </Note>
+</ParamField>
+
+## Rate Limiting
+
+<ParamField path="RATE_LIMIT_WINDOW_MS" type="number" default="60000">
+  Time window in milliseconds for HTTP rate limiting (1 minute default).
+  
+  ```bash
+  RATE_LIMIT_WINDOW_MS=60000
+  ```
+</ParamField>
+
+<ParamField path="RATE_LIMIT_MAX_REQUESTS" type="number" default="360">
+  Maximum HTTP requests allowed per IP within the rate limit window.
+  
+  ```bash
+  RATE_LIMIT_MAX_REQUESTS=360
+  ```
+  
+  <Note>
+    Default allows 360 requests per minute (6 requests per second).
+  </Note>
+</ParamField>
+
+<ParamField path="RATE_LIMIT_SOCKET_MAX_PER_IP" type="number" default="10">
+  Maximum concurrent Socket.IO connections allowed per IP address.
+  
+  ```bash
+  RATE_LIMIT_SOCKET_MAX_PER_IP=10
+  ```
+</ParamField>
+
+## Next.js Configuration
+
+<ParamField path="NEXT_TELEMETRY_DISABLED" type="boolean" default="false">
+  Disable Next.js telemetry collection.
+  
+  ```bash
+  NEXT_TELEMETRY_DISABLED=1
+  ```
+</ParamField>
+
+## Complete Examples
+
+<CodeGroup>
+
+```bash Local Development (.env.local)
+# Redis - local instance
+REDIS_URL=redis://localhost:6379
+
+# Server configuration
+NODE_ENV=development
+PORT=3000
+
+# CORS (auto-configured for localhost in dev)
+# ALLOWED_ORIGINS not needed for local development
+
+# Rate limiting (disabled in development)
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=360
+RATE_LIMIT_SOCKET_MAX_PER_IP=10
+```
+
+```bash Production (.env)
+# Redis - Upstash hosted instance
+REDIS_URL=rediss://default:AbCdEfGh123456@your-instance.upstash.io:6379
+
+# Server configuration
+NODE_ENV=production
+PORT=3000
+HOSTNAME=0.0.0.0
+
+# CORS - Required for production!
+ALLOWED_ORIGINS=https://watchnchill.app,https://www.watchnchill.app
+
+# Rate limiting
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=360
+RATE_LIMIT_SOCKET_MAX_PER_IP=10
+
+# Optional: disable Next.js telemetry
+NEXT_TELEMETRY_DISABLED=1
+```
+
+```bash Docker (.env)
+# Redis - container network
+REDIS_URL=redis://redis:6379
+
+# Server configuration
+NODE_ENV=production
+PORT=3000
+HOSTNAME=0.0.0.0
+
+# CORS
+ALLOWED_ORIGINS=https://your-domain.com
+
+# Rate limiting
+RATE_LIMIT_WINDOW_MS=60000
+RATE_LIMIT_MAX_REQUESTS=360
+RATE_LIMIT_SOCKET_MAX_PER_IP=10
+```
+
+</CodeGroup>
+
+## Environment Variable Loading
+
+The application loads environment variables in the following order:
+
+1. System environment variables
+2. `.env.local` (local development, gitignored)
+3. `.env.production` (production builds)
+4. `.env` (committed defaults)
+
+<Warning>
+  Never commit `.env.local` or any file containing production credentials to version control.
+</Warning>
+
+## Validation
+
+The application validates critical environment variables at startup:
+
+- **REDIS_URL**: Automatically tested on connection. Logs errors if Redis is unavailable.
+- **Rate limiting**: Falls back to in-memory rate limiting if Redis connection fails.
+- **CORS**: Defaults to localhost in development, requires explicit configuration in production.
+
+Check the server logs on startup to verify your configuration:
+
+```bash
+> Initializing Redis connection...
+> Redis connected successfully
+> Redis ready for commands
+> Ready on http://0.0.0.0:3000
+> Socket.IO server running on path: /api/socket/io
+```

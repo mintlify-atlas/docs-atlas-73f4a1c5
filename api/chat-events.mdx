@@ -1,0 +1,576 @@
+---
+title: Chat Events
+description: Socket.IO events for real-time chat messaging and typing indicators in Watch N Chill rooms
+---
+
+## Overview
+
+Chat events enable real-time messaging and typing indicators within Watch N Chill rooms. All authenticated users in a room can send messages and see when others are typing.
+
+## Client Events
+
+Events emitted by the client to the server.
+
+### send-message
+
+Sends a chat message to all users in the room.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+<ParamField path="message" type="string" required>
+  The message content. Must be 1-1000 characters. Trimmed before sending.
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface SendMessageData {
+  roomId: string;
+  message: string;
+}
+```
+
+**Example:**
+
+```typescript
+import { useSocket } from '@/hooks/use-socket';
+
+const { socket } = useSocket();
+
+socket.emit('send-message', {
+  roomId: 'ABC123',
+  message: 'Hello everyone!'
+});
+```
+
+**Response Events:**
+- `new-message` - Broadcast to all users in the room (including sender)
+- `error` - Sent if message sending fails (not authenticated, message too long, etc.)
+
+**Validation:**
+- User must be authenticated (joined the room)
+- Message must be 1-1000 characters after trimming
+- Message is automatically trimmed before storage
+
+---
+
+### typing-start
+
+Notifies other users that you started typing. Should be called when the user begins typing in the message input.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface RoomActionData {
+  roomId: string;
+}
+```
+
+**Example:**
+
+```typescript
+const handleInputChange = (text: string) => {
+  setMessage(text);
+  
+  // Notify others you're typing
+  if (text.length > 0 && !isTyping) {
+    socket?.emit('typing-start', { roomId: 'ABC123' });
+    setIsTyping(true);
+  }
+};
+```
+
+**Response Events:**
+- `user-typing` - Broadcast to all other users (not sender) in the room
+- `error` - Sent if the request fails (not authenticated)
+
+---
+
+### typing-stop
+
+Notifies other users that you stopped typing. Should be called when:
+- User clears the message input
+- User sends the message
+- User hasn't typed for a few seconds (debounced)
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface RoomActionData {
+  roomId: string;
+}
+```
+
+**Example:**
+
+```typescript
+const handleSendMessage = () => {
+  if (message.trim()) {
+    // Send the message
+    socket?.emit('send-message', {
+      roomId: 'ABC123',
+      message: message
+    });
+    
+    // Stop typing indicator
+    socket?.emit('typing-stop', { roomId: 'ABC123' });
+    setIsTyping(false);
+    setMessage('');
+  }
+};
+
+// Auto-stop typing after 3 seconds of inactivity
+useEffect(() => {
+  if (isTyping) {
+    const timeout = setTimeout(() => {
+      socket?.emit('typing-stop', { roomId: 'ABC123' });
+      setIsTyping(false);
+    }, 3000);
+    
+    return () => clearTimeout(timeout);
+  }
+}, [message, isTyping]);
+```
+
+**Response Events:**
+- `user-stopped-typing` - Broadcast to all other users (not sender) in the room
+- `error` - Sent if the request fails (not authenticated)
+
+---
+
+## Server Events
+
+Events emitted by the server to the client.
+
+### new-message
+
+Broadcast to all users (including sender) when a message is sent in the room.
+
+<ResponseField name="message" type="ChatMessage">
+  Complete message object with all details.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface NewMessageResponse {
+  message: ChatMessage;
+}
+
+interface ChatMessage {
+  id: string;          // UUID
+  userId: string;      // UUID of sender
+  userName: string;    // Display name of sender
+  message: string;     // Message content (trimmed)
+  timestamp: Date;     // When message was sent
+  roomId: string;      // Room ID (6 characters)
+  isRead: boolean;     // Whether message has been read (default: false)
+}
+```
+
+**Example:**
+
+```typescript
+import { ChatMessage } from '@/types';
+
+const [messages, setMessages] = useState<ChatMessage[]>([]);
+
+socket.on('new-message', ({ message }) => {
+  console.log(`${message.userName}: ${message.message}`);
+  
+  // Add message to chat
+  setMessages(prev => [...prev, message]);
+  
+  // Show notification if not from current user
+  if (message.userId !== currentUser.id) {
+    toast.info(`${message.userName}: ${message.message}`);
+  }
+});
+```
+
+---
+
+### user-typing
+
+Broadcast to all users (except sender) when someone starts typing.
+
+<ResponseField name="userId" type="string">
+  UUID of the user who started typing.
+</ResponseField>
+
+<ResponseField name="userName" type="string">
+  Display name of the user who started typing.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface TypingEventResponse {
+  userId: string;
+  userName: string;
+}
+```
+
+**Example:**
+
+```typescript
+import { TypingUser } from '@/types';
+
+const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
+
+socket.on('user-typing', ({ userId, userName }) => {
+  console.log(`${userName} is typing...`);
+  
+  // Add user to typing list with timestamp
+  setTypingUsers(prev => {
+    // Remove existing entry if present
+    const filtered = prev.filter(u => u.userId !== userId);
+    
+    // Add new entry
+    return [...filtered, {
+      userId,
+      userName,
+      timestamp: Date.now()
+    }];
+  });
+});
+```
+
+---
+
+### user-stopped-typing
+
+Broadcast to all users (except sender) when someone stops typing.
+
+<ResponseField name="userId" type="string">
+  UUID of the user who stopped typing.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface UserLeftResponse {
+  userId: string;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('user-stopped-typing', ({ userId }) => {
+  // Remove user from typing list
+  setTypingUsers(prev => prev.filter(u => u.userId !== userId));
+});
+```
+
+---
+
+## Message Data Structure
+
+All chat messages follow a consistent structure:
+
+```typescript
+interface ChatMessage {
+  id: string;          // UUID - unique message identifier
+  userId: string;      // UUID - sender's user ID
+  userName: string;    // Display name of sender (2-50 chars)
+  message: string;     // Message content (1-1000 chars, trimmed)
+  timestamp: Date;     // When message was sent
+  roomId: string;      // Room ID (6 characters)
+  isRead: boolean;     // Whether message has been read (default: false)
+}
+```
+
+**Example Message:**
+
+```json
+{
+  "id": "550e8400-e29b-41d4-a716-446655440000",
+  "userId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "userName": "John Doe",
+  "message": "Let's watch this together!",
+  "timestamp": "2024-03-15T10:30:00.000Z",
+  "roomId": "ABC123",
+  "isRead": false
+}
+```
+
+---
+
+## Typing User Data Structure
+
+Typing indicators track users currently typing:
+
+```typescript
+interface TypingUser {
+  userId: string;      // UUID - user ID
+  userName: string;    // Display name (2-50 chars)
+  timestamp: number;   // Milliseconds when typing started
+}
+```
+
+**Example Typing User:**
+
+```json
+{
+  "userId": "7c9e6679-7425-40de-944b-e07fc1f90ae7",
+  "userName": "Jane Smith",
+  "timestamp": 1710497400000
+}
+```
+
+---
+
+## Complete Example
+
+Here's a complete example of a chat component with typing indicators:
+
+```typescript
+import { useEffect, useState, useRef } from 'react';
+import { useSocket } from '@/hooks/use-socket';
+import { ChatMessage, TypingUser, User } from '@/types';
+import { toast } from 'sonner';
+
+interface ChatProps {
+  roomId: string;
+  currentUser: User;
+}
+
+function Chat({ roomId, currentUser }: ChatProps) {
+  const { socket } = useSocket();
+  const [messages, setMessages] = useState<ChatMessage[]>([]);
+  const [typingUsers, setTypingUsers] = useState<TypingUser[]>([]);
+  const [message, setMessage] = useState('');
+  const [isTyping, setIsTyping] = useState(false);
+  const typingTimeoutRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Listen for chat events
+  useEffect(() => {
+    if (!socket) return;
+
+    // New message received
+    socket.on('new-message', ({ message }) => {
+      setMessages(prev => [...prev, message]);
+      
+      // Notification for messages from others
+      if (message.userId !== currentUser.id) {
+        toast.info(`${message.userName}: ${message.message}`);
+      }
+    });
+
+    // User started typing
+    socket.on('user-typing', ({ userId, userName }) => {
+      setTypingUsers(prev => {
+        const filtered = prev.filter(u => u.userId !== userId);
+        return [...filtered, { userId, userName, timestamp: Date.now() }];
+      });
+    });
+
+    // User stopped typing
+    socket.on('user-stopped-typing', ({ userId }) => {
+      setTypingUsers(prev => prev.filter(u => u.userId !== userId));
+    });
+
+    return () => {
+      socket.off('new-message');
+      socket.off('user-typing');
+      socket.off('user-stopped-typing');
+    };
+  }, [socket, currentUser.id]);
+
+  // Auto-cleanup stale typing indicators (5 seconds)
+  useEffect(() => {
+    const interval = setInterval(() => {
+      const now = Date.now();
+      setTypingUsers(prev => 
+        prev.filter(u => now - u.timestamp < 5000)
+      );
+    }, 1000);
+
+    return () => clearInterval(interval);
+  }, []);
+
+  // Handle message input change
+  const handleInputChange = (text: string) => {
+    setMessage(text);
+
+    // Start typing indicator
+    if (text.length > 0 && !isTyping) {
+      socket?.emit('typing-start', { roomId });
+      setIsTyping(true);
+    }
+
+    // Clear existing timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    // Stop typing after 3 seconds of inactivity
+    if (text.length > 0) {
+      typingTimeoutRef.current = setTimeout(() => {
+        socket?.emit('typing-stop', { roomId });
+        setIsTyping(false);
+      }, 3000);
+    } else {
+      // Empty input - stop typing immediately
+      socket?.emit('typing-stop', { roomId });
+      setIsTyping(false);
+    }
+  };
+
+  // Send message
+  const handleSendMessage = () => {
+    const trimmed = message.trim();
+    
+    if (!trimmed) return;
+    
+    if (trimmed.length > 1000) {
+      toast.error('Message too long (max 1000 characters)');
+      return;
+    }
+
+    // Send message
+    socket?.emit('send-message', {
+      roomId,
+      message: trimmed
+    });
+
+    // Stop typing indicator
+    if (isTyping) {
+      socket?.emit('typing-stop', { roomId });
+      setIsTyping(false);
+    }
+
+    // Clear timeout
+    if (typingTimeoutRef.current) {
+      clearTimeout(typingTimeoutRef.current);
+    }
+
+    // Clear input
+    setMessage('');
+  };
+
+  // Handle Enter key
+  const handleKeyPress = (e: React.KeyboardEvent) => {
+    if (e.key === 'Enter' && !e.shiftKey) {
+      e.preventDefault();
+      handleSendMessage();
+    }
+  };
+
+  // Cleanup on unmount
+  useEffect(() => {
+    return () => {
+      if (typingTimeoutRef.current) {
+        clearTimeout(typingTimeoutRef.current);
+      }
+      if (isTyping) {
+        socket?.emit('typing-stop', { roomId });
+      }
+    };
+  }, [socket, roomId, isTyping]);
+
+  // Format typing indicator text
+  const getTypingText = () => {
+    const count = typingUsers.length;
+    if (count === 0) return null;
+    if (count === 1) return `${typingUsers[0].userName} is typing...`;
+    if (count === 2) return `${typingUsers[0].userName} and ${typingUsers[1].userName} are typing...`;
+    return `${count} people are typing...`;
+  };
+
+  return (
+    <div className="chat-container">
+      {/* Messages */}
+      <div className="messages">
+        {messages.map(msg => (
+          <div 
+            key={msg.id} 
+            className={msg.userId === currentUser.id ? 'message-own' : 'message-other'}
+          >
+            <div className="message-author">{msg.userName}</div>
+            <div className="message-content">{msg.message}</div>
+            <div className="message-time">
+              {new Date(msg.timestamp).toLocaleTimeString()}
+            </div>
+          </div>
+        ))}
+      </div>
+
+      {/* Typing indicator */}
+      {typingUsers.length > 0 && (
+        <div className="typing-indicator">
+          {getTypingText()}
+        </div>
+      )}
+
+      {/* Input */}
+      <div className="message-input">
+        <input
+          type="text"
+          value={message}
+          onChange={(e) => handleInputChange(e.target.value)}
+          onKeyPress={handleKeyPress}
+          placeholder="Type a message..."
+          maxLength={1000}
+        />
+        <button onClick={handleSendMessage}>Send</button>
+      </div>
+    </div>
+  );
+}
+
+export default Chat;
+```
+
+---
+
+## Best Practices
+
+### Typing Indicators
+
+1. **Debounce typing-stop**: Don't stop typing immediately after each keystroke. Wait 2-3 seconds of inactivity.
+
+2. **Cleanup stale indicators**: Remove typing indicators that are older than 5 seconds to handle disconnections gracefully.
+
+3. **Stop on send**: Always emit `typing-stop` when sending a message.
+
+4. **Stop on unmount**: Clear typing indicators when component unmounts.
+
+### Message Display
+
+1. **Auto-scroll**: Scroll to bottom when new messages arrive.
+
+2. **Group messages**: Consider grouping consecutive messages from the same user.
+
+3. **Timestamps**: Display relative timestamps ("just now", "2 minutes ago") for better UX.
+
+4. **Read receipts**: Use the `isRead` field to implement read receipts if needed.
+
+### Performance
+
+1. **Limit history**: Only load recent messages initially, implement pagination for history.
+
+2. **Virtualization**: Use virtual scrolling for rooms with many messages.
+
+3. **Debounce input**: Debounce the typing indicator to avoid excessive events.
+
+### Error Handling
+
+```typescript
+socket.on('error', ({ error }) => {
+  if (error.includes('message')) {
+    toast.error('Failed to send message. Please try again.');
+  }
+});
+```

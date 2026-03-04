@@ -1,0 +1,410 @@
+---
+title: Host Controls
+description: Host privileges, guest promotion, and room management capabilities
+icon: "crown"
+---
+
+Hosts have special privileges in Watch N Chill rooms, including video playback control, the ability to promote guests, and room management. Understanding host controls is essential for managing successful watch parties.
+
+## Host Privileges
+
+Hosts have full control over the watch party experience:
+
+<CardGroup cols={2}>
+  <Card title="Playback Control" icon="play">
+    Play, pause, and seek the video. All guests automatically sync to your actions.
+  </Card>
+  <Card title="Video Selection" icon="video">
+    Change the video URL at any time. Supports YouTube videos only.
+  </Card>
+  <Card title="Guest Promotion" icon="user-plus">
+    Promote any guest to host status, granting them full privileges.
+  </Card>
+  <Card title="Chat Access" icon="comments">
+    Send and receive messages in the real-time chat (same as guests).
+  </Card>
+</CardGroup>
+
+## Becoming a Host
+
+There are two ways to become a host:
+
+### Create a Room
+
+When you create a room, you automatically become the host:
+
+<Steps>
+  <Step title="Create Room">
+    Click "Create Room" on the homepage and enter your name.
+  </Step>
+  
+  <Step title="Receive Token">
+    You're assigned a secret host token stored in your browser's session storage.
+  </Step>
+  
+  <Step title="Host Status">
+    You join the room as the primary host with all privileges.
+  </Step>
+  
+  <Step title="Crown Badge">
+    A crown icon appears next to your name in the user list.
+  </Step>
+</Steps>
+
+<Note>
+As the room creator, you have the host token which allows you to rejoin as host if you disconnect. Other promoted hosts won't have this token.
+</Note>
+
+### Get Promoted
+
+Existing hosts can promote you from guest to host:
+
+<Steps>
+  <Step title="Join as Guest">
+    Enter a room using the room ID or link.
+  </Step>
+  
+  <Step title="Request Promotion">
+    Ask a host in the chat to promote you (no formal request system exists).
+  </Step>
+  
+  <Step title="Host Promotes">
+    A host clicks the crown button next to your name in the user list.
+  </Step>
+  
+  <Step title="Gain Privileges">
+    You immediately receive all host privileges and see host controls.
+  </Step>
+</Steps>
+
+<Tip>
+Promoted hosts have the same privileges as the original creator, except they don't have the host token for re-authentication.
+</Tip>
+
+## Video Playback Control
+
+As a host, you control video playback for everyone:
+
+### Play/Pause
+
+Click the play or pause button on the video player:
+
+1. **Your Action**: Click play or pause on the YouTube player
+2. **State Detection**: The system detects the YouTube player state change
+3. **Timestamp Capture**: Your current video timestamp is recorded
+4. **Broadcast**: A `play-video` or `pause-video` event is sent to all guests
+5. **Guest Sync**: All guests' videos automatically play or pause at your timestamp
+
+<Accordion title="Technical: State Change Detection">
+The YouTube player emits `onStateChange` events:
+
+- **PLAYING (1)**: Triggers `play-video` socket event
+- **PAUSED (2)**: Triggers `pause-video` socket event
+- **BUFFERING (3)**: Checks for seek operations during buffering
+
+Each event includes the current timestamp to ensure guests sync exactly.
+</Accordion>
+
+### Seek to Position
+
+Drag the video progress bar or click a timestamp:
+
+1. **Seek Action**: You move the playback position
+2. **Time Difference**: System calculates the difference (> 1 second = seek)
+3. **Seek Event**: Emits `seek-video` with the new timestamp
+4. **Guest Jump**: All guests' videos jump to the same position
+
+<Warning>
+Rapid seeking (scrubbing back and forth) can cause temporary desync as the system processes multiple seek events. Let the video stabilize between seeks.
+</Warning>
+
+### Changing Videos
+
+To change the video being watched:
+
+<Steps>
+  <Step title="Enter Video URL">
+    In the video setup interface, paste a YouTube video URL.
+  </Step>
+  
+  <Step title="Validation">
+    The system validates that the URL is a YouTube video:
+    - Must include `youtube.com` or `youtu.be`
+    - Must be a valid video URL format
+  </Step>
+  
+  <Step title="Set Video">
+    Click the button to set the video. A `set-video` event is broadcast.
+  </Step>
+  
+  <Step title="All Players Update">
+    Every participant's player loads the new video and resets to timestamp 0.
+  </Step>
+</Steps>
+
+<Note>
+Only YouTube videos are supported. Attempting to use other video platforms (Vimeo, Twitch, etc.) will result in an error.
+</Note>
+
+## Promoting Guests
+
+Hosts can promote any guest to host status:
+
+### Promotion Process
+
+<Steps>
+  <Step title="Open User List">
+    In the room sidebar, locate the "Participants" section.
+  </Step>
+  
+  <Step title="Find Guest">
+    Scroll through the user list to find the guest you want to promote.
+    
+    <Note>
+    The list is sorted with hosts first, then guests alphabetically.
+    </Note>
+  </Step>
+  
+  <Step title="Click Crown Button">
+    Click the crown icon button next to the guest's name.
+  </Step>
+  
+  <Step title="Instant Promotion">
+    The guest is immediately promoted:
+    - Their `isHost` status updates to `true`
+    - A crown appears next to their name
+    - They gain access to all host controls
+    - All participants are notified
+  </Step>
+</Steps>
+
+### Multi-Host Support
+
+Watch N Chill supports unlimited hosts in a single room:
+
+<CardGroup cols={2}>
+  <Card title="Shared Control" icon="users-gear">
+    All hosts can control playback simultaneously. Last action takes precedence.
+  </Card>
+  <Card title="Independent Sync" icon="tower-broadcast">
+    Each host sends periodic sync checks every 5 seconds to keep guests aligned.
+  </Card>
+  <Card title="Equal Promotion" icon="crown">
+    Any host can promote any guest, not just the original creator.
+  </Card>
+  <Card title="No Demotion" icon="shield">
+    Once promoted, hosts cannot be demoted back to guest status.
+  </Card>
+</CardGroup>
+
+<Tip>
+Multiple hosts are useful for:
+- Co-hosting watch parties
+- Redundancy if one host disconnects
+- Collaborative control in group viewings
+</Tip>
+
+### Who to Promote
+
+Consider promoting guests who:
+
+- Are trusted friends
+- Need to control playback (e.g., video owner)
+- Will stay for the entire session
+- Can help manage the room if you disconnect
+
+<Warning>
+Once promoted, guests **cannot** be demoted. Only promote people you trust with full room control.
+</Warning>
+
+## Room Closure
+
+Hosts play a critical role in room persistence:
+
+### When All Hosts Leave
+
+If every host leaves or disconnects, the room closes immediately:
+
+<Steps>
+  <Step title="Last Host Leaves">
+    The final host exits the room (closes tab, loses connection, or clicks leave).
+  </Step>
+  
+  <Step title="Closure Detection">
+    The server detects zero remaining hosts in the user list.
+  </Step>
+  
+  <Step title="Notify Guests">
+    All guests receive a "room-error" event:
+    
+    ```
+    "All hosts have left the room. Redirecting to home page..."
+    ```
+  </Step>
+  
+  <Step title="Room Deletion">
+    The room is immediately deleted from Redis:
+    - All user data removed
+    - Chat history deleted
+    - Video state cleared
+    - Room ID becomes available
+  </Step>
+  
+  <Step title="Guest Redirect">
+    After 1.5 seconds, guests are automatically redirected to the homepage.
+  </Step>
+</Steps>
+
+<Warning>
+**No Host Migration**
+
+Unlike some platforms, Watch N Chill does **not** automatically promote a guest to host when all hosts leave. The room simply closes.
+
+To keep a room alive, promote at least one guest to host before leaving.
+</Warning>
+
+## Host Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Promote Early" icon="user-plus">
+    Promote trusted participants early in case you disconnect unexpectedly.
+  </Card>
+  <Card title="Announce Actions" icon="bullhorn">
+    Use chat to warn before seeking or changing videos.
+  </Card>
+  <Card title="Check Sync" icon="arrows-rotate">
+    Periodically ask in chat if everyone's video is in sync.
+  </Card>
+  <Card title="Be Patient" icon="hourglass">
+    Wait for guests to load before starting playback.
+  </Card>
+</CardGroup>
+
+## Guest Perspective
+
+Understanding how guests see your actions helps you host better:
+
+### What Guests Experience
+
+When you control playback:
+
+1. **Instant Sync**: Guests' videos react within 100-300ms
+2. **Visual Feedback**: Their player state changes automatically
+3. **No Control**: Guests cannot manually override your actions
+4. **Info Banner**: New guests see a banner explaining host controls
+
+### When Guests Click Controls
+
+If a guest tries to play/pause:
+
+- **Nothing Happens**: The YouTube player doesn't respond
+- **No Feedback**: No error message (could be improved)
+- **Can Request**: They can ask for promotion in chat
+
+<Note>
+Guests can click the video info dialog to learn about host controls and promotion.
+</Note>
+
+## Host Control Dialog
+
+The host control dialog explains privileges to guests:
+
+<Steps>
+  <Step title="Trigger">
+    Shown automatically when guests join a room with a video, or clicked manually.
+  </Step>
+  
+  <Step title="Content">
+    Explains:
+    - Guest capabilities (watch & chat)
+    - Host capabilities (control, change video, promote)
+    - How to request promotion
+  </Step>
+  
+  <Step title="Dismiss">
+    Auto-dismisses after 5 seconds or when clicked.
+  </Step>
+</Steps>
+
+## Troubleshooting
+
+### Controls Not Working
+
+**Play/pause buttons don't work:**
+
+1. **Verify Host Status**: Check for a crown icon next to your name
+2. **Check Connection**: Ensure your WebSocket connection is active
+3. **Reload Page**: Refresh to re-establish connection
+
+<Accordion title="Verifying Host Status">
+You're a host if:
+- You see a crown next to your name in the user list
+- Your name appears first (hosts are sorted before guests)
+- You can see the promote button next to guest names
+</Accordion>
+
+### Lost Host Status
+
+**Rejoined as guest instead of host:**
+
+- Your session storage was cleared
+- You're on a different browser/device
+- Your browser restarted between sessions
+
+<Warning>
+If you lose host status and no other hosts exist, you cannot regain it. Someone will need to create a new room.
+</Warning>
+
+### Cannot Promote Guest
+
+**Promote button doesn't appear:**
+
+- You're not a host
+- Target user is already a host
+- User list hasn't refreshed (try refreshing page)
+
+### Room Closed Unexpectedly
+
+**Room closed while you were still there:**
+
+- All hosts (including you) left or disconnected
+- This can happen during network issues
+- Create a new room and invite participants again
+
+## Security Considerations
+
+<AccordionGroup>
+  <Accordion title="Host Token Security">
+    The host token:
+    - Is a UUID v4 (highly random)
+    - Stored in session storage (cleared on tab close)
+    - Required to rejoin as the original host
+    - Not transmitted in URLs (safe from sharing)
+    - Validated server-side on join
+  </Accordion>
+  
+  <Accordion title="Promotion Validation">
+    The server validates:
+    - Requester is actually a host (server-side check)
+    - Target user exists in the room
+    - Target user is not already a host
+    - Room exists and is valid
+    
+    This prevents promotion spoofing or privilege escalation.
+  </Accordion>
+  
+  <Accordion title="Action Authorization">
+    Every playback action checks:
+    - User has `isHost: true` in room data
+    - User is authenticated (has userId)
+    - Room exists
+    
+    Guests cannot forge host actions via socket events.
+  </Accordion>
+</AccordionGroup>
+
+<Warning>
+**Share Room IDs Carefully**
+
+Anyone with the room ID can join as a guest. Only share with people you want in your watch party. There's no password protection or access control.
+</Warning>

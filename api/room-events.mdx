@@ -1,0 +1,518 @@
+---
+title: Room Events
+description: Socket.IO events for room management including creating, joining, leaving, and host promotion
+---
+
+## Overview
+
+Room events handle all room-related operations in Watch N Chill. These events manage room creation, user joining/leaving, and host promotion.
+
+## Client Events
+
+Events emitted by the client to the server.
+
+### create-room
+
+Creates a new room and automatically joins the creator as the host.
+
+<ParamField path="hostName" type="string" required>
+  Name of the room host. Must be 2-50 characters and contain only letters, numbers, spaces, and basic punctuation (- _ . ! ?).
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface CreateRoomData {
+  hostName: string;
+}
+```
+
+**Example:**
+
+```typescript
+import { useSocket } from '@/hooks/use-socket';
+
+const { socket } = useSocket();
+
+socket.emit('create-room', {
+  hostName: 'John Doe'
+});
+```
+
+**Response Events:**
+- `room-created` - Sent only to the creator with room details and host token
+- `room-joined` - Sent only to the creator confirming they joined the room
+- `room-error` - Sent if room creation fails
+
+---
+
+### join-room
+
+Joins an existing room as either a guest or the host (if providing valid host token).
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID (uppercase letters and numbers only).
+</ParamField>
+
+<ParamField path="userName" type="string" required>
+  Name of the user joining. Must be 2-50 characters and contain only letters, numbers, spaces, and basic punctuation (- _ . ! ?).
+</ParamField>
+
+<ParamField path="hostToken" type="string" optional>
+  UUID token required to join as the host. Only the room creator has this token.
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface JoinRoomData {
+  roomId: string;
+  userName: string;
+  hostToken?: string;
+}
+```
+
+**Example (Guest):**
+
+```typescript
+socket.emit('join-room', {
+  roomId: 'ABC123',
+  userName: 'Jane Smith'
+});
+```
+
+**Example (Host Rejoining):**
+
+```typescript
+const hostToken = localStorage.getItem('hostToken');
+
+socket.emit('join-room', {
+  roomId: 'ABC123',
+  userName: 'John Doe',
+  hostToken: hostToken
+});
+```
+
+**Response Events:**
+- `room-joined` - Sent to the joining user with full room state
+- `user-joined` - Broadcast to other users in the room
+- `sync-update` - Sent to newly joined guests if video is currently playing
+- `room-error` - Sent if join fails (invalid room, duplicate name, etc.)
+
+---
+
+### leave-room
+
+Leaves the current room. If the last host leaves, the room is closed and all users are disconnected.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID to leave.
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface RoomActionData {
+  roomId: string;
+}
+```
+
+**Example:**
+
+```typescript
+socket.emit('leave-room', {
+  roomId: 'ABC123'
+});
+```
+
+**Response Events:**
+- `user-left` - Broadcast to remaining users in the room
+- `room-error` - Broadcast to all users if the last host leaves ("All hosts have left the room")
+
+---
+
+### promote-host
+
+Promotes a guest user to host status. Only current hosts can promote other users.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+<ParamField path="userId" type="string" required>
+  UUID of the user to promote to host.
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface PromoteHostData {
+  roomId: string;
+  userId: string;
+}
+```
+
+**Example:**
+
+```typescript
+socket.emit('promote-host', {
+  roomId: 'ABC123',
+  userId: '550e8400-e29b-41d4-a716-446655440000'
+});
+```
+
+**Response Events:**
+- `user-promoted` - Broadcast to all users in the room
+- `error` - Sent if promotion fails (not authorized, user not found, etc.)
+
+---
+
+## Server Events
+
+Events emitted by the server to the client.
+
+### room-created
+
+Sent only to the room creator after successful room creation.
+
+<ResponseField name="roomId" type="string">
+  The 6-character room ID.
+</ResponseField>
+
+<ResponseField name="room" type="Room">
+  Complete room object with all details.
+</ResponseField>
+
+<ResponseField name="hostToken" type="string">
+  UUID token for the host. Store this securely to rejoin as host.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface RoomCreatedResponse {
+  roomId: string;
+  room: Room;
+  hostToken: string;
+}
+
+interface Room {
+  id: string;
+  hostId: string;
+  hostName: string;
+  hostToken: string;
+  videoUrl?: string;
+  videoType: 'youtube' | null;
+  videoState: VideoState;
+  users: User[];
+  createdAt: Date;
+}
+
+interface VideoState {
+  isPlaying: boolean;
+  currentTime: number;
+  duration: number;
+  lastUpdateTime: number;
+}
+
+interface User {
+  id: string;
+  name: string;
+  isHost: boolean;
+  joinedAt: Date;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('room-created', ({ roomId, room, hostToken }) => {
+  console.log('Room created:', roomId);
+  // Store host token for rejoining
+  localStorage.setItem('hostToken', hostToken);
+  // Navigate to room
+  router.push(`/room/${roomId}`);
+});
+```
+
+---
+
+### room-joined
+
+Sent to a user after they successfully join a room.
+
+<ResponseField name="room" type="Room">
+  Complete room object with current state, video info, and all users.
+</ResponseField>
+
+<ResponseField name="user" type="User">
+  The user object for the joining user.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface RoomJoinedResponse {
+  room: Room;
+  user: User;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('room-joined', ({ room, user }) => {
+  console.log('Joined room:', room.id);
+  console.log('Current user:', user.name, 'isHost:', user.isHost);
+  console.log('Users in room:', room.users.length);
+  
+  if (room.videoUrl) {
+    console.log('Video loaded:', room.videoUrl);
+  }
+});
+```
+
+---
+
+### user-joined
+
+Broadcast to all existing users in a room when a new user joins.
+
+<ResponseField name="user" type="User">
+  The user object for the newly joined user.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface UserJoinedResponse {
+  user: User;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('user-joined', ({ user }) => {
+  console.log(`${user.name} joined the room`);
+  toast.success(`${user.name} joined`);
+});
+```
+
+---
+
+### user-left
+
+Broadcast to all remaining users when someone leaves the room.
+
+<ResponseField name="userId" type="string">
+  UUID of the user who left.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface UserLeftResponse {
+  userId: string;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('user-left', ({ userId }) => {
+  const user = room.users.find(u => u.id === userId);
+  if (user) {
+    console.log(`${user.name} left the room`);
+    toast.info(`${user.name} left`);
+  }
+});
+```
+
+---
+
+### user-promoted
+
+Broadcast to all users when someone is promoted to host.
+
+<ResponseField name="userId" type="string">
+  UUID of the promoted user.
+</ResponseField>
+
+<ResponseField name="userName" type="string">
+  Name of the promoted user.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface UserPromotedResponse {
+  userId: string;
+  userName: string;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('user-promoted', ({ userId, userName }) => {
+  console.log(`${userName} is now a host`);
+  toast.success(`${userName} promoted to host`);
+  
+  // Update local state
+  if (currentUser.id === userId) {
+    setCurrentUser({ ...currentUser, isHost: true });
+  }
+});
+```
+
+---
+
+### room-error
+
+Sent when a room operation fails or the room is closed.
+
+<ResponseField name="error" type="string">
+  Error message describing what went wrong.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface ErrorResponse {
+  error: string;
+}
+```
+
+**Common Error Messages:**
+- `"Room not found"` - The specified room doesn't exist
+- `"The name \"X\" is already taken in this room"` - Duplicate username
+- `"Invalid host credentials"` - Incorrect or missing host token
+- `"All hosts have left the room. Redirecting to home page..."` - Room closed
+
+**Example:**
+
+```typescript
+socket.on('room-error', ({ error }) => {
+  console.error('Room error:', error);
+  toast.error(error);
+  
+  // Handle room closure
+  if (error.includes('All hosts have left')) {
+    router.push('/');
+  }
+});
+```
+
+---
+
+## Complete Example
+
+Here's a complete example showing how to create and manage a room:
+
+```typescript
+import { useEffect, useState } from 'react';
+import { useSocket } from '@/hooks/use-socket';
+import { Room, User } from '@/types';
+import { toast } from 'sonner';
+
+function RoomManager() {
+  const { socket, isConnected } = useSocket();
+  const [room, setRoom] = useState<Room | null>(null);
+  const [currentUser, setCurrentUser] = useState<User | null>(null);
+
+  useEffect(() => {
+    if (!socket || !isConnected) return;
+
+    // Listen for room created
+    socket.on('room-created', ({ roomId, room, hostToken }) => {
+      localStorage.setItem('hostToken', hostToken);
+      console.log('Created room:', roomId);
+    });
+
+    // Listen for room joined
+    socket.on('room-joined', ({ room, user }) => {
+      setRoom(room);
+      setCurrentUser(user);
+      toast.success('Joined room successfully');
+    });
+
+    // Listen for other users joining
+    socket.on('user-joined', ({ user }) => {
+      toast.info(`${user.name} joined`);
+      // Update room state with new user
+      setRoom(prev => prev ? {
+        ...prev,
+        users: [...prev.users, user]
+      } : null);
+    });
+
+    // Listen for users leaving
+    socket.on('user-left', ({ userId }) => {
+      setRoom(prev => prev ? {
+        ...prev,
+        users: prev.users.filter(u => u.id !== userId)
+      } : null);
+    });
+
+    // Listen for user promotions
+    socket.on('user-promoted', ({ userId, userName }) => {
+      toast.success(`${userName} promoted to host`);
+      setRoom(prev => prev ? {
+        ...prev,
+        users: prev.users.map(u => 
+          u.id === userId ? { ...u, isHost: true } : u
+        )
+      } : null);
+    });
+
+    // Listen for errors
+    socket.on('room-error', ({ error }) => {
+      toast.error(error);
+      if (error.includes('All hosts have left')) {
+        setRoom(null);
+        setCurrentUser(null);
+      }
+    });
+
+    return () => {
+      socket.off('room-created');
+      socket.off('room-joined');
+      socket.off('user-joined');
+      socket.off('user-left');
+      socket.off('user-promoted');
+      socket.off('room-error');
+    };
+  }, [socket, isConnected]);
+
+  const createRoom = (hostName: string) => {
+    socket?.emit('create-room', { hostName });
+  };
+
+  const joinRoom = (roomId: string, userName: string) => {
+    const hostToken = localStorage.getItem('hostToken');
+    socket?.emit('join-room', { roomId, userName, hostToken });
+  };
+
+  const leaveRoom = () => {
+    if (room) {
+      socket?.emit('leave-room', { roomId: room.id });
+      setRoom(null);
+      setCurrentUser(null);
+    }
+  };
+
+  const promoteUser = (userId: string) => {
+    if (room && currentUser?.isHost) {
+      socket?.emit('promote-host', { roomId: room.id, userId });
+    }
+  };
+
+  return (
+    // Your UI here
+    <div>
+      {/* Room management UI */}
+    </div>
+  );
+}
+```

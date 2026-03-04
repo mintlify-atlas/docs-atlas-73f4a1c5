@@ -1,0 +1,355 @@
+---
+title: Real-Time Chat
+description: Live chat with typing indicators, message history, and Redis persistence
+icon: "comments"
+---
+
+Watch N Chill includes a real-time chat system that lets participants communicate during watch parties. Messages are delivered instantly via WebSockets and persist in Redis for late joiners.
+
+## Chat Interface
+
+The chat system appears in the room sidebar and includes:
+
+<CardGroup cols={2}>
+  <Card title="Message List" icon="list">
+    Displays up to 20 most recent messages with sender names and timestamps
+  </Card>
+  <Card title="Typing Indicators" icon="keyboard">
+    Shows who's currently typing in real-time
+  </Card>
+  <Card title="Message Input" icon="pen">
+    Text input field for composing messages
+  </Card>
+  <Card title="Auto-Scroll" icon="arrow-down">
+    Automatically scrolls to newest messages
+  </Card>
+</CardGroup>
+
+## Sending Messages
+
+Sending messages is simple and works for both hosts and guests:
+
+<Steps>
+  <Step title="Type Message">
+    Click in the chat input field at the bottom of the chat panel and start typing your message.
+  </Step>
+  
+  <Step title="Typing Indicator Activates">
+    As you type, other participants see "[Your Name] is typing..." below the messages.
+    
+    <Note>
+    The typing indicator disappears after 1 second of inactivity or when you clear the input.
+    </Note>
+  </Step>
+  
+  <Step title="Send Message">
+    Press Enter or click the send button. Your message is instantly broadcast to all participants.
+  </Step>
+  
+  <Step title="Message Appears">
+    Your message appears in the chat for everyone, including yourself, with your name and timestamp.
+  </Step>
+</Steps>
+
+### Message Format
+
+Each message includes:
+
+- **Sender Name**: Display name of the user who sent it
+- **Message Content**: The actual text (trimmed of whitespace)
+- **Timestamp**: When the message was sent
+- **User Identification**: Messages you sent are visually distinct
+
+<Accordion title="Technical: Message Schema">
+```typescript
+interface ChatMessage {
+  id: string;           // Unique UUID for the message
+  userId: string;       // ID of the sender
+  userName: string;     // Display name of sender
+  message: string;      // Message content (trimmed)
+  timestamp: Date;      // When message was sent
+  roomId: string;       // Which room it belongs to
+  isRead: boolean;      // Whether current user has read it
+}
+```
+</Accordion>
+
+## Typing Indicators
+
+Typing indicators show real-time awareness of who's composing messages:
+
+### How They Work
+
+<Steps>
+  <Step title="Start Typing">
+    When you type in the input field, a `typing-start` event is broadcast to all other participants.
+  </Step>
+  
+  <Step title="Display Indicator">
+    Other users see "[Your Name] is typing..." at the bottom of the chat.
+  </Step>
+  
+  <Step title="Inactivity Timer">
+    If you stop typing for 1 second, a `typing-stop` event is sent automatically.
+  </Step>
+  
+  <Step title="Clear on Send">
+    When you send a message, the typing indicator immediately clears.
+  </Step>
+</Steps>
+
+### Multiple Typers
+
+When multiple people type simultaneously:
+
+- Each person's indicator is shown separately
+- Format: "Alice is typing...", "Bob is typing..."
+- Indicators auto-remove after timeout
+
+<Tip>
+Typing indicators help create a more natural conversation flow, similar to messaging apps like Slack or Discord.
+</Tip>
+
+## Message History
+
+Chat messages are persisted in Redis for continuity:
+
+### Storage
+
+<AccordionGroup>
+  <Accordion title="Redis List Structure">
+    Messages are stored in a Redis list with the key pattern:
+    
+    ```
+    chat:{roomId}
+    ```
+    
+    - Uses `LPUSH` to add new messages to the front
+    - Uses `LTRIM` to keep only the last 20 messages
+    - Auto-expires after 24 hours (matches room TTL)
+  </Accordion>
+  
+  <Accordion title="Retrieval on Join">
+    When joining a room, the system:
+    1. Fetches the last 20 messages from Redis
+    2. Converts timestamp strings back to Date objects
+    3. Reverses the list to chronological order
+    4. Displays them in the chat panel
+  </Accordion>
+</AccordionGroup>
+
+### Message Limit
+
+<Warning>
+**20 Message Limit**
+
+Only the most recent 20 messages are kept. Older messages are automatically discarded. This prevents Redis memory bloat and keeps chat focused on recent conversation.
+</Warning>
+
+### Late Joiners
+
+When you join a room that already has conversation history:
+
+1. **Load History**: Previous messages (up to 20) load immediately
+2. **Context**: You can see what's been discussed before you arrived
+3. **Real-Time Updates**: New messages appear instantly as they're sent
+
+<Note>
+You cannot retrieve messages older than the last 20, even if they existed before the trim operation.
+</Note>
+
+## Chat Persistence
+
+Chat data persists alongside the room:
+
+### Lifespan
+
+- **Duration**: 24 hours from last message
+- **Tied to Room**: When room expires, chat history is deleted
+- **No Export**: Chat history cannot be exported or saved
+
+### Deletion Scenarios
+
+<CardGroup cols={2}>
+  <Card title="Room Expires" icon="clock">
+    After 24 hours, the room and all messages auto-delete from Redis.
+  </Card>
+  <Card title="Room Closes" icon="door-closed">
+    When all hosts leave, the room closes and chat history is immediately deleted.
+  </Card>
+</CardGroup>
+
+## Message Delivery
+
+Messages are delivered via WebSocket events:
+
+### Event Flow
+
+<Steps>
+  <Step title="Client Sends">
+    Your client emits a `send-message` event with the room ID and message content.
+  </Step>
+  
+  <Step title="Server Validates">
+    The server validates:
+    - User is authenticated (has userId and userName)
+    - Message content exists and is not empty (after trimming)
+    - Room exists
+  </Step>
+  
+  <Step title="Server Stores">
+    Message is saved to Redis with a unique UUID and timestamp.
+  </Step>
+  
+  <Step title="Broadcast">
+    Server broadcasts `new-message` event to all participants in the room.
+  </Step>
+  
+  <Step title="Clients Render">
+    All clients receive the message and add it to their chat display.
+  </Step>
+</Steps>
+
+<Accordion title="Technical: Socket Events">
+**Outgoing (Client → Server):**
+- `send-message`: Send a new message
+- `typing-start`: Notify others you're typing
+- `typing-stop`: Notify others you stopped typing
+
+**Incoming (Server → Client):**
+- `new-message`: Receive a new message
+- `user-typing`: Someone started typing
+- `user-stopped-typing`: Someone stopped typing
+</Accordion>
+
+## Read Status
+
+Messages have a basic read status system:
+
+- **Your Messages**: Automatically marked as read
+- **Others' Messages**: Initially marked as unread
+- **Overlay Mode**: Unread count shows in minimized chat badge
+- **Mark as Read**: Opening the chat marks all messages as read
+
+<Note>
+Read status is client-side only and not persisted. If you refresh, all messages appear as read.
+</Note>
+
+## Auto-Scroll Behavior
+
+The chat panel automatically scrolls to show new content:
+
+### Scroll Triggers
+
+<CardGroup cols={2}>
+  <Card title="New Message" icon="message">
+    Scrolls to bottom when a new message arrives (smooth scroll)
+  </Card>
+  <Card title="Typing Indicator" icon="keyboard">
+    Scrolls to show typing indicator when someone starts typing
+  </Card>
+  <Card title="Manual Scroll" icon="hand">
+    You can manually scroll up to read history
+  </Card>
+  <Card title="Scroll Restoration" icon="rotate">
+    New messages trigger scroll even if you were reading history
+  </Card>
+</CardGroup>
+
+<Tip>
+The smooth scroll animation provides a polished user experience without being jarring.
+</Tip>
+
+## Chat Modes
+
+Watch N Chill supports two chat display modes:
+
+<Tabs>
+  <Tab title="Sidebar Mode">
+    **Desktop Experience**
+    
+    - Fixed height panel (384px)
+    - Scrollable message area
+    - Always visible next to video
+    - Best for desktop/large screens
+    
+    <Note>
+    Sidebar mode is the default for room pages.
+    </Note>
+  </Tab>
+  
+  <Tab title="Overlay Mode">
+    **Mobile Experience**
+    
+    - Floating panel over video
+    - Minimize/maximize controls
+    - Unread message badge when minimized
+    - Best for mobile/small screens
+    
+    <Tip>
+    Overlay mode can be toggled to give video more screen space.
+    </Tip>
+  </Tab>
+</Tabs>
+
+## Best Practices
+
+<CardGroup cols={2}>
+  <Card title="Keep It Relevant" icon="bullseye">
+    Chat about the video you're watching together.
+  </Card>
+  <Card title="Use Timestamps" icon="clock">
+    Reference video timestamps when discussing specific moments.
+  </Card>
+  <Card title="Be Respectful" icon="handshake">
+    Remember real people are behind each message.
+  </Card>
+  <Card title="No Spam" icon="ban">
+    Avoid sending too many messages rapidly.
+  </Card>
+</CardGroup>
+
+## Limitations
+
+<Warning>
+**Current Chat Limitations**
+
+- No message editing
+- No message deletion
+- No emoji picker (can paste emojis)
+- No file/image sharing
+- No @mentions or notifications
+- No private messages
+- No moderation tools (kick, mute)
+- 20 message history limit
+</Warning>
+
+## Troubleshooting
+
+### Messages Not Sending
+
+**"Not authenticated" error:**
+- Your session may have expired
+- Try refreshing the page
+- Ensure you properly joined the room
+
+### Not Seeing Messages
+
+**Messages from others don't appear:**
+- Check your internet connection
+- WebSocket might be disconnected
+- Refresh the page to reconnect
+
+### Typing Indicator Stuck
+
+**Indicator doesn't disappear:**
+- Other user's connection may have dropped
+- Indicators auto-clear after timeout
+- No action needed on your part
+
+### Can't Scroll Chat
+
+**Chat panel won't scroll:**
+- May be a rendering issue
+- Try resizing your browser window
+- Refresh the page if problem persists

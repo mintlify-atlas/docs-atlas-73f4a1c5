@@ -1,0 +1,624 @@
+---
+title: Video Events
+description: Socket.IO events for synchronized video playback control including play, pause, seek, and sync operations
+---
+
+## Overview
+
+Video events handle synchronized video playback across all users in a room. Only hosts can control video playback, while guests receive sync updates to stay synchronized.
+
+## Client Events
+
+Events emitted by the client to the server. All video control events require host privileges.
+
+### set-video
+
+Sets the video URL for the room. Only hosts can set videos. Currently supports YouTube videos only.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+<ParamField path="videoUrl" type="string" required>
+  Valid YouTube video URL (must include youtube.com or youtu.be).
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface SetVideoData {
+  roomId: string;
+  videoUrl: string;
+}
+```
+
+**Example:**
+
+```typescript
+import { useSocket } from '@/hooks/use-socket';
+
+const { socket } = useSocket();
+
+socket.emit('set-video', {
+  roomId: 'ABC123',
+  videoUrl: 'https://www.youtube.com/watch?v=dQw4w9WgXcQ'
+});
+```
+
+**Response Events:**
+- `video-set` - Broadcast to all users in the room with video details
+- `error` - Sent if video setting fails (not a host, invalid URL, etc.)
+
+**Validation:**
+- URL must be a valid URL format
+- URL must contain "youtube.com" or "youtu.be"
+- Only hosts can set videos
+
+---
+
+### play-video
+
+Plays the video for all users in the room at the specified time. Only hosts can play videos.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+<ParamField path="currentTime" type="number" required>
+  Video timestamp in seconds where playback should start (must be >= 0).
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface VideoControlData {
+  roomId: string;
+  currentTime: number;
+}
+```
+
+**Example:**
+
+```typescript
+// Play video from 30 seconds
+socket.emit('play-video', {
+  roomId: 'ABC123',
+  currentTime: 30.5
+});
+```
+
+**Response Events:**
+- `video-played` - Broadcast to all other users (not the sender) in the room
+- `error` - Sent if playback fails (not a host, room not found, etc.)
+
+---
+
+### pause-video
+
+Pauses the video for all users in the room at the specified time. Only hosts can pause videos.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+<ParamField path="currentTime" type="number" required>
+  Video timestamp in seconds where playback should pause (must be >= 0).
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface VideoControlData {
+  roomId: string;
+  currentTime: number;
+}
+```
+
+**Example:**
+
+```typescript
+// Pause video at 45 seconds
+socket.emit('pause-video', {
+  roomId: 'ABC123',
+  currentTime: 45.2
+});
+```
+
+**Response Events:**
+- `video-paused` - Broadcast to all other users (not the sender) in the room
+- `error` - Sent if pause fails (not a host, room not found, etc.)
+
+---
+
+### seek-video
+
+Seeks to a specific time in the video for all users. Maintains current play/pause state. Only hosts can seek.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+<ParamField path="currentTime" type="number" required>
+  Video timestamp in seconds to seek to (must be >= 0).
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface VideoControlData {
+  roomId: string;
+  currentTime: number;
+}
+```
+
+**Example:**
+
+```typescript
+// Seek to 1 minute mark
+socket.emit('seek-video', {
+  roomId: 'ABC123',
+  currentTime: 60.0
+});
+```
+
+**Response Events:**
+- `video-seeked` - Broadcast to all other users (not the sender) in the room
+- `error` - Sent if seek fails (not a host, room not found, etc.)
+
+---
+
+### sync-check
+
+Periodic sync update sent by hosts to keep all guests synchronized. This should be called regularly (e.g., every 5 seconds) when video is playing.
+
+<ParamField path="roomId" type="string" required>
+  6-character room ID.
+</ParamField>
+
+<ParamField path="currentTime" type="number" required>
+  Current video timestamp in seconds (must be >= 0).
+</ParamField>
+
+<ParamField path="isPlaying" type="boolean" required>
+  Whether the video is currently playing.
+</ParamField>
+
+<ParamField path="timestamp" type="number" required>
+  Server timestamp in milliseconds when this sync was sent (must be > 0).
+</ParamField>
+
+**TypeScript Interface:**
+
+```typescript
+interface SyncCheckData {
+  roomId: string;
+  currentTime: number;
+  isPlaying: boolean;
+  timestamp: number;
+}
+```
+
+**Example:**
+
+```typescript
+// Send periodic sync updates (hosts only)
+const sendSyncUpdate = () => {
+  const currentTime = player.getCurrentTime();
+  const isPlaying = player.getPlayerState() === 1; // 1 = playing
+  
+  socket.emit('sync-check', {
+    roomId: 'ABC123',
+    currentTime: currentTime,
+    isPlaying: isPlaying,
+    timestamp: Date.now()
+  });
+};
+
+// Call every 5 seconds when video is playing
+const syncInterval = setInterval(sendSyncUpdate, 5000);
+```
+
+**Response Events:**
+- `sync-update` - Broadcast to all other users (not the sender) in the room
+- `error` - Sent if sync fails (not a host, room not found, etc.)
+
+**Implementation Note:**
+Hosts should send sync-check events periodically to ensure guests stay synchronized, especially during playback. Guests use these updates to adjust their playback position if they drift out of sync.
+
+---
+
+## Server Events
+
+Events emitted by the server to the client.
+
+### video-set
+
+Broadcast to all users when a video is set in the room.
+
+<ResponseField name="videoUrl" type="string">
+  The YouTube video URL that was set.
+</ResponseField>
+
+<ResponseField name="videoType" type="'youtube'">
+  The type of video. Currently always "youtube".
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface VideoSetResponse {
+  videoUrl: string;
+  videoType: 'youtube';
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('video-set', ({ videoUrl, videoType }) => {
+  console.log('Video set:', videoUrl);
+  // Load the video in the player
+  loadVideo(videoUrl);
+});
+```
+
+---
+
+### video-played
+
+Broadcast to all users (except the sender) when the host plays the video.
+
+<ResponseField name="currentTime" type="number">
+  The video timestamp in seconds where playback should start.
+</ResponseField>
+
+<ResponseField name="timestamp" type="number">
+  Server timestamp in milliseconds when the play command was issued.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface VideoEventResponse {
+  currentTime: number;
+  timestamp: number;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('video-played', ({ currentTime, timestamp }) => {
+  console.log('Video played at:', currentTime);
+  
+  // Calculate time elapsed since server timestamp
+  const now = Date.now();
+  const elapsed = (now - timestamp) / 1000;
+  
+  // Adjust playback position for network delay
+  const adjustedTime = currentTime + elapsed;
+  
+  // Seek and play
+  player.seekTo(adjustedTime);
+  player.playVideo();
+});
+```
+
+---
+
+### video-paused
+
+Broadcast to all users (except the sender) when the host pauses the video.
+
+<ResponseField name="currentTime" type="number">
+  The video timestamp in seconds where playback should pause.
+</ResponseField>
+
+<ResponseField name="timestamp" type="number">
+  Server timestamp in milliseconds when the pause command was issued.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface VideoEventResponse {
+  currentTime: number;
+  timestamp: number;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('video-paused', ({ currentTime, timestamp }) => {
+  console.log('Video paused at:', currentTime);
+  
+  // Seek to exact position and pause
+  player.seekTo(currentTime);
+  player.pauseVideo();
+});
+```
+
+---
+
+### video-seeked
+
+Broadcast to all users (except the sender) when the host seeks to a different time.
+
+<ResponseField name="currentTime" type="number">
+  The video timestamp in seconds to seek to.
+</ResponseField>
+
+<ResponseField name="timestamp" type="number">
+  Server timestamp in milliseconds when the seek command was issued.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface VideoEventResponse {
+  currentTime: number;
+  timestamp: number;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('video-seeked', ({ currentTime, timestamp }) => {
+  console.log('Video seeked to:', currentTime);
+  
+  // Seek to the new position
+  player.seekTo(currentTime);
+});
+```
+
+---
+
+### sync-update
+
+Sent to guests to synchronize their playback with the host. Sent in two scenarios:
+1. Periodically via sync-check from hosts
+2. Immediately when a guest joins a room with a playing video
+
+<ResponseField name="currentTime" type="number">
+  The current video timestamp in seconds.
+</ResponseField>
+
+<ResponseField name="isPlaying" type="boolean">
+  Whether the video should be playing or paused.
+</ResponseField>
+
+<ResponseField name="timestamp" type="number">
+  Server timestamp in milliseconds when this sync update was created.
+</ResponseField>
+
+**TypeScript Interface:**
+
+```typescript
+interface SyncUpdateResponse {
+  currentTime: number;
+  isPlaying: boolean;
+  timestamp: number;
+}
+```
+
+**Example:**
+
+```typescript
+socket.on('sync-update', ({ currentTime, isPlaying, timestamp }) => {
+  const playerTime = player.getCurrentTime();
+  const now = Date.now();
+  const elapsed = (now - timestamp) / 1000;
+  
+  // Calculate expected time based on server state
+  const expectedTime = isPlaying ? currentTime + elapsed : currentTime;
+  
+  // Check if we're out of sync (threshold: 1 second)
+  const drift = Math.abs(playerTime - expectedTime);
+  if (drift > 1.0) {
+    console.log(`Out of sync by ${drift.toFixed(2)}s, correcting...`);
+    player.seekTo(expectedTime);
+  }
+  
+  // Ensure playing state matches
+  const currentlyPlaying = player.getPlayerState() === 1;
+  if (isPlaying && !currentlyPlaying) {
+    player.playVideo();
+  } else if (!isPlaying && currentlyPlaying) {
+    player.pauseVideo();
+  }
+});
+```
+
+---
+
+## Complete Example
+
+Here's a complete example showing video synchronization for both hosts and guests:
+
+```typescript
+import { useEffect, useRef, useState } from 'react';
+import { useSocket } from '@/hooks/use-socket';
+import { Room, User } from '@/types';
+import YouTubePlayer from 'youtube-player';
+
+function VideoPlayer({ room, currentUser }: { room: Room; currentUser: User }) {
+  const { socket } = useSocket();
+  const playerRef = useRef<any>(null);
+  const [isReady, setIsReady] = useState(false);
+  const syncIntervalRef = useRef<NodeJS.Timeout | null>(null);
+
+  // Initialize YouTube player
+  useEffect(() => {
+    const player = YouTubePlayer('player-div');
+    playerRef.current = player;
+
+    player.on('ready', () => {
+      setIsReady(true);
+    });
+
+    return () => {
+      player.destroy();
+    };
+  }, []);
+
+  // Handle video events
+  useEffect(() => {
+    if (!socket || !isReady) return;
+
+    // Video set
+    socket.on('video-set', ({ videoUrl }) => {
+      const videoId = extractYouTubeId(videoUrl);
+      playerRef.current?.loadVideoById(videoId);
+    });
+
+    // Video played
+    socket.on('video-played', ({ currentTime, timestamp }) => {
+      const elapsed = (Date.now() - timestamp) / 1000;
+      const adjustedTime = currentTime + elapsed;
+      playerRef.current?.seekTo(adjustedTime);
+      playerRef.current?.playVideo();
+    });
+
+    // Video paused
+    socket.on('video-paused', ({ currentTime }) => {
+      playerRef.current?.seekTo(currentTime);
+      playerRef.current?.pauseVideo();
+    });
+
+    // Video seeked
+    socket.on('video-seeked', ({ currentTime }) => {
+      playerRef.current?.seekTo(currentTime);
+    });
+
+    // Sync update (guests only)
+    if (!currentUser.isHost) {
+      socket.on('sync-update', ({ currentTime, isPlaying, timestamp }) => {
+        handleSyncUpdate(currentTime, isPlaying, timestamp);
+      });
+    }
+
+    return () => {
+      socket.off('video-set');
+      socket.off('video-played');
+      socket.off('video-paused');
+      socket.off('video-seeked');
+      socket.off('sync-update');
+    };
+  }, [socket, isReady, currentUser.isHost]);
+
+  // Host periodic sync
+  useEffect(() => {
+    if (!currentUser.isHost || !isReady) return;
+
+    const sendSync = async () => {
+      const currentTime = await playerRef.current?.getCurrentTime();
+      const state = await playerRef.current?.getPlayerState();
+      const isPlaying = state === 1;
+
+      if (currentTime !== undefined) {
+        socket?.emit('sync-check', {
+          roomId: room.id,
+          currentTime,
+          isPlaying,
+          timestamp: Date.now()
+        });
+      }
+    };
+
+    syncIntervalRef.current = setInterval(sendSync, 5000);
+
+    return () => {
+      if (syncIntervalRef.current) {
+        clearInterval(syncIntervalRef.current);
+      }
+    };
+  }, [currentUser.isHost, isReady, room.id, socket]);
+
+  // Host controls
+  const handleSetVideo = (url: string) => {
+    if (currentUser.isHost) {
+      socket?.emit('set-video', {
+        roomId: room.id,
+        videoUrl: url
+      });
+    }
+  };
+
+  const handlePlay = async () => {
+    if (currentUser.isHost) {
+      const currentTime = await playerRef.current?.getCurrentTime();
+      socket?.emit('play-video', {
+        roomId: room.id,
+        currentTime: currentTime || 0
+      });
+      playerRef.current?.playVideo();
+    }
+  };
+
+  const handlePause = async () => {
+    if (currentUser.isHost) {
+      const currentTime = await playerRef.current?.getCurrentTime();
+      socket?.emit('pause-video', {
+        roomId: room.id,
+        currentTime: currentTime || 0
+      });
+      playerRef.current?.pauseVideo();
+    }
+  };
+
+  const handleSeek = async (time: number) => {
+    if (currentUser.isHost) {
+      socket?.emit('seek-video', {
+        roomId: room.id,
+        currentTime: time
+      });
+      playerRef.current?.seekTo(time);
+    }
+  };
+
+  const handleSyncUpdate = async (
+    currentTime: number,
+    isPlaying: boolean,
+    timestamp: number
+  ) => {
+    const playerTime = await playerRef.current?.getCurrentTime();
+    const elapsed = (Date.now() - timestamp) / 1000;
+    const expectedTime = isPlaying ? currentTime + elapsed : currentTime;
+    const drift = Math.abs(playerTime - expectedTime);
+
+    // Sync if drift is more than 1 second
+    if (drift > 1.0) {
+      console.log(`Syncing: drift ${drift.toFixed(2)}s`);
+      await playerRef.current?.seekTo(expectedTime);
+    }
+
+    // Sync playing state
+    const state = await playerRef.current?.getPlayerState();
+    const currentlyPlaying = state === 1;
+    if (isPlaying && !currentlyPlaying) {
+      playerRef.current?.playVideo();
+    } else if (!isPlaying && currentlyPlaying) {
+      playerRef.current?.pauseVideo();
+    }
+  };
+
+  const extractYouTubeId = (url: string): string => {
+    const match = url.match(/[?&]v=([^&]+)/) || url.match(/youtu\.be\/([^?]+)/);
+    return match ? match[1] : '';
+  };
+
+  return (
+    <div>
+      <div id="player-div" />
+      {currentUser.isHost && (
+        <div>
+          <button onClick={handlePlay}>Play</button>
+          <button onClick={handlePause}>Pause</button>
+        </div>
+      )}
+    </div>
+  );
+}
+```

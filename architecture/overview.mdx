@@ -1,0 +1,319 @@
+---
+title: 'Architecture Overview'
+description: 'High-level architecture of Watch N Chill - a real-time YouTube watch party application'
+---
+
+## System Architecture
+
+Watch N Chill is built on a custom Next.js server architecture with Socket.IO for real-time communication, Redis for state persistence, and React for the frontend.
+
+<Note>
+  The application uses a **custom Next.js server** instead of the standard Next.js server to integrate Socket.IO for bidirectional real-time communication.
+</Note>
+
+## Architecture Diagram
+
+```
+┌─────────────────────────────────────────────────────────────┐
+│                         Client Layer                         │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  Next.js App Router (React Components)                 │ │
+│  │  - Room Pages (/room/[roomId])                         │ │
+│  │  - Landing, Create, Join Pages                         │ │
+│  └────────────────────────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  React Context & Hooks                                  │ │
+│  │  - SocketProvider (WebSocket management)               │ │
+│  │  - useRoom, useVideoSync, useCreateRoom, useJoinRoom   │ │
+│  └────────────────────────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  Socket.IO Client                                       │ │
+│  │  Path: /api/socket/io                                  │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                         Server Layer                         │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  Custom HTTP Server (server.ts)                        │ │
+│  │  - Next.js request handler                             │ │
+│  │  - Rate limiting middleware                            │ │
+│  │  - Health check endpoint (/health)                     │ │
+│  └────────────────────────────────────────────────────────┘ │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  Socket.IO Server                                       │ │
+│  │  - Connection management & authentication              │ │
+│  │  - Event handlers (room, video, chat)                 │ │
+│  │  - Zod schema validation                               │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+                              │
+                              ▼
+┌─────────────────────────────────────────────────────────────┐
+│                      Persistence Layer                       │
+│  ┌────────────────────────────────────────────────────────┐ │
+│  │  Redis                                                  │ │
+│  │  - Room state (24h TTL)                                │ │
+│  │  - Chat messages (last 20 messages)                    │ │
+│  │  - Active room tracking                                │ │
+│  │  - Rate limit counters                                 │ │
+│  └────────────────────────────────────────────────────────┘ │
+└─────────────────────────────────────────────────────────────┘
+```
+
+## Core Components
+
+<AccordionGroup>
+  <Accordion title="Custom Next.js Server">
+    The application uses a custom Node.js HTTP server that integrates both Next.js and Socket.IO:
+
+    ```typescript server.ts
+    const app = next({ dev, hostname, port });
+    const handle = app.getRequestHandler();
+    
+    const httpServer = createServer(async (req, res) => {
+      // Rate limiting
+      const { allowed, remaining } = await checkRateLimit(req);
+      if (!allowed) {
+        res.statusCode = 429;
+        res.end('Too Many Requests');
+        return;
+      }
+      
+      // Next.js request handling
+      await handle(req, res, parsedUrl);
+    });
+    
+    // Initialize Socket.IO
+    initSocketIO(httpServer);
+    ```
+
+    This approach allows Socket.IO to share the same HTTP server as Next.js, enabling real-time features.
+  </Accordion>
+
+  <Accordion title="Socket.IO Real-Time Layer">
+    Socket.IO provides bidirectional event-based communication between clients and server:
+
+    **Key Features:**
+    - WebSocket with fallback to polling
+    - Room-based event broadcasting
+    - Connection state management
+    - Automatic reconnection
+
+    **Event Categories:**
+    - Room management (create, join, leave)
+    - Video control (play, pause, seek, sync)
+    - Chat messaging (send, typing indicators)
+    - User management (promote to host)
+  </Accordion>
+
+  <Accordion title="Redis State Management">
+    Redis serves as the single source of truth for room state:
+
+    **Data Structures:**
+    - `room:{roomId}` - Complete room state (users, video, metadata)
+    - `chat:{roomId}` - List of last 20 chat messages
+    - `active-rooms` - Set of all active room IDs
+    - `rl:{ip}` - Rate limit counters per IP
+
+    **TTL Strategy:**
+    - Rooms: 24 hours (auto-cleanup)
+    - Chat: 24 hours
+    - Rate limits: 1 minute to 1 hour
+  </Accordion>
+
+  <Accordion title="React Frontend Architecture">
+    The frontend uses Next.js App Router with a component-driven architecture:
+
+    **Page Structure:**
+    - `/` - Landing page
+    - `/create` - Create room form
+    - `/join` - Join room form  
+    - `/room/[roomId]` - Main room interface
+
+    **State Management:**
+    - React Context for Socket.IO connection
+    - Custom hooks for room and video sync logic
+    - Local component state for UI
+    - Session storage for user data
+  </Accordion>
+</AccordionGroup>
+
+## Data Flow
+
+### Room Creation Flow
+
+```
+User                Client              Server              Redis
+ │                    │                    │                   │
+ │──── Fill Form ────▶│                    │                   │
+ │                    │──── create-room ───▶│                   │
+ │                    │    {hostName}      │                   │
+ │                    │                    │─── Generate ID ──▶│
+ │                    │                    │   & Host Token    │
+ │                    │                    │                   │
+ │                    │                    │──── Save Room ───▶│
+ │                    │                    │   (24h TTL)       │
+ │                    │                    │                   │
+ │                    │◀─── room-created ──│                   │
+ │                    │    {roomId, token} │                   │
+ │                    │                    │                   │
+ │◀─ Navigate to ────│                    │                   │
+ │   /room/[roomId]   │                    │                   │
+```
+
+### Video Sync Flow
+
+```
+Host                 Guests              Server              Redis
+ │                     │                    │                   │
+ │──── Play Video ────▶│                    │                   │
+ │                     │                    │                   │
+ │    (every 5s)       │                    │                   │
+ │──── sync-check ────▶│                    │                   │
+ │  {time, playing}    │                    │                   │
+ │                     │                    │                   │
+ │                     │◀─── sync-update ───│                   │
+ │                     │  {time, playing,   │                   │
+ │                     │   timestamp}       │                   │
+ │                     │                    │                   │
+ │                     │─── Adjust Time ───▶│                   │
+ │                     │   (if drift > 1.5s)│                   │
+```
+
+## Technology Stack
+
+<CardGroup cols={2}>
+  <Card title="Backend" icon="server">
+    - **Runtime:** Node.js
+    - **Framework:** Next.js 14+ (Custom Server)
+    - **WebSocket:** Socket.IO v4
+    - **Validation:** Zod schemas
+    - **Database:** Redis (Upstash)
+  </Card>
+
+  <Card title="Frontend" icon="browser">
+    - **Framework:** React 18+ / Next.js 14+
+    - **Routing:** App Router
+    - **Styling:** Tailwind CSS
+    - **State:** React Context + Hooks
+    - **WebSocket:** Socket.IO Client
+  </Card>
+</CardGroup>
+
+## Key Design Decisions
+
+<Tabs>
+  <Tab title="Custom Server">
+    **Why Custom Server?**
+    
+    Next.js serverless functions don't support WebSocket connections. A custom server allows:
+    - Long-lived Socket.IO connections
+    - Shared state between HTTP and WebSocket
+    - Fine-grained control over server lifecycle
+    - Custom middleware (rate limiting)
+
+    **Trade-offs:**
+    - Cannot deploy to Vercel
+    - Need to manage server process
+    - Deployed on platforms like Render, Railway, or AWS
+  </Tab>
+
+  <Tab title="Redis State">
+    **Why Redis?**
+    
+    In-memory state would be lost on server restart and doesn't scale across instances:
+    - Persistent room state (with TTL)
+    - Fast read/write operations (< 1ms)
+    - Atomic operations for concurrent updates
+    - Built-in expiration for auto-cleanup
+
+    **Data Model:**
+    ```typescript
+    {
+      id: string,           // 6-char room ID
+      hostId: string,       // UUID
+      hostToken: string,    // UUID for authentication
+      videoUrl?: string,
+      videoType: 'youtube' | null,
+      videoState: {
+        isPlaying: boolean,
+        currentTime: number,
+        duration: number,
+        lastUpdateTime: number // Unix timestamp
+      },
+      users: User[],
+      createdAt: Date
+    }
+    ```
+  </Tab>
+
+  <Tab title="Validation Strategy">
+    **Why Zod?**
+    
+    All Socket.IO events are validated with Zod schemas before processing:
+    - Runtime type safety
+    - Clear error messages
+    - Shared schemas between client and server
+    - Prevents invalid data from corrupting state
+
+    Example from server.ts:line 11:
+    ```typescript
+    const validatedData = validateData(SetVideoDataSchema, data, socket);
+    if (!validatedData) return;
+    ```
+  </Tab>
+
+  <Tab title="Rate Limiting">
+    **Multi-Layer Protection:**
+    
+    1. **HTTP Rate Limit** (server.ts:43-67)
+       - 360 requests per minute per IP
+       - Lua script for atomic Redis operations
+       - Falls back to in-memory if Redis unavailable
+    
+    2. **Socket Connection Limit** (socket/index.ts:41-45)
+       - 10 concurrent connections per IP
+       - Prevents socket flooding attacks
+    
+    3. **Event Validation**
+       - All events validated with Zod
+       - Host-only actions checked server-side
+  </Tab>
+</Tabs>
+
+## Scalability Considerations
+
+<Warning>
+  **Current Limitations:**
+  - Single server instance (no horizontal scaling)
+  - Socket.IO requires sticky sessions for multi-instance
+  - Redis is single point of failure
+</Warning>
+
+**Future Improvements:**
+- Redis Cluster for high availability
+- Socket.IO adapter for multi-instance (Redis adapter)
+- Load balancer with sticky sessions
+- Separate WebSocket and HTTP servers
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Backend Deep Dive" icon="code" href="/architecture/backend">
+    Explore server implementation, Socket.IO handlers, and Redis repositories
+  </Card>
+  
+  <Card title="Frontend Architecture" icon="react" href="/architecture/frontend">
+    Learn about React hooks, component structure, and state management
+  </Card>
+  
+  <Card title="Real-Time Sync" icon="bolt" href="/architecture/real-time-sync">
+    Deep dive into video synchronization mechanism and drift correction
+  </Card>
+  
+  <Card title="Development Guide" icon="hammer" href="/deployment/local-development">
+    Set up your development environment and start contributing
+  </Card>
+</CardGroup>

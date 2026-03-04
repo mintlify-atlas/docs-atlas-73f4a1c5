@@ -1,122 +1,96 @@
 {
   "$schema": "https://mintlify.com/docs.json",
-  "theme": "mint",
-  "name": "Mint Starter Kit",
+  "name": "Watch N Chill",
+  "theme": "palm",
   "colors": {
-    "primary": "#16A34A",
-    "light": "#07C983",
-    "dark": "#15803D"
+    "primary": "#040404"
   },
-  "favicon": "/favicon.svg",
+  "favicon": "/favicon.webp",
+  "logo": {
+    "light": "https://media.brand.dev/ebd0a10c-f103-4b10-91dc-ca971efdde13.svg",
+    "dark": "https://media.brand.dev/ebd0a10c-f103-4b10-91dc-ca971efdde13.svg"
+  },
+  "navbar": {
+    "primary": {
+      "type": "github",
+      "href": "https://github.com/nawinsharma/watchNChill"
+    }
+  },
+  "footer": {
+    "socials": {
+      "github": "https://github.com/nawinsharma/watchNChill"
+    }
+  },
   "navigation": {
     "tabs": [
       {
-        "tab": "Guides",
+        "tab": "Documentation",
         "groups": [
           {
-            "group": "Getting started",
+            "group": "Get Started",
             "pages": [
-              "index",
-              "quickstart",
-              "development"
+              "introduction",
+              "quickstart"
             ]
           },
           {
-            "group": "Customization",
+            "group": "Core Features",
             "pages": [
-              "essentials/settings",
-              "essentials/navigation"
+              "features/synchronized-playback",
+              "features/room-system",
+              "features/real-time-chat",
+              "features/host-controls"
             ]
           },
           {
-            "group": "Writing content",
+            "group": "Deployment",
             "pages": [
-              "essentials/markdown",
-              "essentials/code",
-              "essentials/images",
-              "essentials/reusable-snippets"
+              "deployment/environment-variables",
+              "deployment/local-development",
+              "deployment/docker",
+              "deployment/production"
             ]
           },
           {
-            "group": "AI tools",
+            "group": "Architecture",
             "pages": [
-              "ai-tools/cursor",
-              "ai-tools/claude-code",
-              "ai-tools/windsurf"
+              "architecture/overview",
+              "architecture/backend",
+              "architecture/frontend",
+              "architecture/real-time-sync"
             ]
           }
         ]
       },
       {
-        "tab": "API reference",
+        "tab": "API Reference",
         "groups": [
           {
-            "group": "API documentation",
+            "group": "Socket.IO Events",
             "pages": [
-              "api-reference/introduction"
+              "api/room-events",
+              "api/video-events",
+              "api/chat-events"
             ]
           },
           {
-            "group": "Endpoint examples",
+            "group": "Client Hooks",
             "pages": [
-              "api-reference/endpoint/get",
-              "api-reference/endpoint/create",
-              "api-reference/endpoint/delete",
-              "api-reference/endpoint/webhook"
+              "api/hooks/use-room",
+              "api/hooks/use-video-sync",
+              "api/hooks/use-create-room",
+              "api/hooks/use-join-room"
+            ]
+          },
+          {
+            "group": "Backend Services",
+            "pages": [
+              "api/services/redis",
+              "api/services/rate-limiting"
             ]
           }
         ]
       }
-    ],
-    "global": {
-      "anchors": [
-        {
-          "anchor": "Documentation",
-          "href": "https://mintlify.com/docs",
-          "icon": "book-open-cover"
-        },
-        {
-          "anchor": "Blog",
-          "href": "https://mintlify.com/blog",
-          "icon": "newspaper"
-        }
-      ]
-    }
-  },
-  "logo": {
-    "light": "/logo/light.svg",
-    "dark": "/logo/dark.svg"
-  },
-  "navbar": {
-    "links": [
-      {
-        "label": "Support",
-        "href": "mailto:hi@mintlify.com"
-      }
-    ],
-    "primary": {
-      "type": "button",
-      "label": "Dashboard",
-      "href": "https://dashboard.mintlify.com"
-    }
-  },
-  "contextual": {
-    "options": [
-     "copy",
-     "view",
-     "chatgpt",
-     "claude",
-     "perplexity",
-     "mcp",
-     "cursor",
-     "vscode"
-   ]
-  },
-  "footer": {
-    "socials": {
-      "x": "https://x.com/mintlify",
-      "github": "https://github.com/mintlify",
-      "linkedin": "https://linkedin.com/company/mintlify"
-    }
+    ]
   }
 }

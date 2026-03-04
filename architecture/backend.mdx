@@ -1,0 +1,569 @@
+---
+title: 'Backend Architecture'
+description: 'Deep dive into the server implementation, Socket.IO handlers, and Redis persistence'
+---
+
+## Custom Server Setup
+
+Watch N Chill uses a custom Node.js HTTP server that integrates Next.js and Socket.IO on the same port.
+
+### Server Initialization
+
+The main server file (`server.ts`) creates an HTTP server that handles both Next.js pages and Socket.IO connections:
+
+```typescript server.ts:42-79
+app.prepare().then(() => {
+  const { windowMs } = getRateLimitConfig();
+  const retryAfterSec = Math.ceil(windowMs / 1000);
+
+  const httpServer = createServer(async (req, res) => {
+    try {
+      if (req.url && (req.url === '/health')) {
+        res.statusCode = 200;
+        res.setHeader('content-type', 'text/plain; charset=utf-8');
+        res.setHeader('cache-control', 'no-store');
+        res.end("heart beating");
+        return;
+      }
+
+      if (!dev) {
+        const { allowed, remaining } = await checkRateLimit(req);
+        res.setHeader('X-RateLimit-Limit', String(getRateLimitConfig().maxRequests));
+        res.setHeader('X-RateLimit-Remaining', String(remaining));
+        if (!allowed) {
+          res.statusCode = 429;
+          res.setHeader('Retry-After', String(retryAfterSec));
+          res.setHeader('content-type', 'text/plain; charset=utf-8');
+          res.end('Too Many Requests');
+          return;
+        }
+      }
+
+      const parsedUrl = parse(req.url!, true);
+      await handle(req, res, parsedUrl);
+    } catch (err) {
+      console.error('Error occurred handling', req.url, err);
+      res.statusCode = 500;
+      res.end('internal server error');
+    }
+  });
+
+  // Initialize Socket.IO with the TypeScript implementation
+  initSocketIO(httpServer);
+
+  httpServer.listen(port, () => {
+    console.log(`> Ready on http://${hostname}:${port}`);
+    console.log(`> Socket.IO server running on path: /api/socket/io`);
+  });
+});
+```
+
+<Note>
+  The server runs on a single port (default: 3000) and routes requests to either Next.js or Socket.IO based on the path.
+</Note>
+
+## Socket.IO Integration
+
+### Initialization
+
+Socket.IO is initialized with CORS configuration and connection handling:
+
+```typescript socket/index.ts:16-57
+export function initSocketIO(httpServer: HTTPServer): IOServer {
+  if (io) {
+    return io;
+  }
+  io = new IOServer(httpServer, {
+    cors: {
+      origin:
+        process.env.NODE_ENV === 'production'
+          ? process.env.ALLOWED_ORIGINS?.split(',') || []
+          : ['http://localhost:3000'],
+      methods: ['GET', 'POST'],
+      credentials: true,
+    },
+    path: '/api/socket/io',
+  });
+
+  io.on('connection', async (socket) => {
+    const forwarded = socket.handshake.headers['x-forwarded-for'];
+    const clientIp =
+      (typeof forwarded === 'string' ? forwarded.split(',')[0]?.trim() : forwarded?.[0]?.trim()) ??
+      socket.handshake.address ??
+      socket.conn.remoteAddress ??
+      'unknown';
+    socket.data.clientIp = clientIp;
+
+    const { allowed } = await checkSocketConnectionAllowed(clientIp);
+    if (!allowed) {
+      socket.disconnect(true);
+      return;
+    }
+
+    console.log('User connected:', socket.id);
+
+    registerRoomHandlers(socket, io!);
+    registerVideoHandlers(socket, io!);
+    registerChatHandlers(socket, io!);
+
+    socket.on('disconnect', () => handleDisconnect(socket));
+  });
+
+  return io;
+}
+```
+
+### Event Handler Architecture
+
+Socket.IO events are organized into three handler modules:
+
+<CardGroup cols={3}>
+  <Card title="Room Handler" icon="door-open">
+    - create-room
+    - join-room
+    - leave-room
+    - promote-host
+  </Card>
+  
+  <Card title="Video Handler" icon="play">
+    - set-video
+    - play-video
+    - pause-video
+    - seek-video
+    - sync-check
+  </Card>
+  
+  <Card title="Chat Handler" icon="message">
+    - send-message
+    - typing-start
+    - typing-stop
+  </Card>
+</CardGroup>
+
+## Event Validation with Zod
+
+All incoming Socket.IO events are validated using Zod schemas before processing:
+
+```typescript socket/utils.ts:6-25
+export function validateData<T>(
+  schema: z.ZodSchema<T>,
+  data: unknown,
+  socket: Socket<SocketEvents, SocketEvents, object, SocketData>
+): T | null {
+  try {
+    return schema.parse(data);
+  } catch (error) {
+    if (error instanceof z.ZodError) {
+      console.error('Validation error:', error.issues);
+      socket.emit('room-error', {
+        error: `Invalid data: ${error.issues.map(issue => issue.message).join(', ')}`,
+      });
+    } else {
+      console.error('Unexpected validation error:', error);
+      socket.emit('room-error', { error: 'Invalid data provided' });
+    }
+    return null;
+  }
+}
+```
+
+### Example: Room Creation
+
+```typescript socket/room-handler.ts:11-57
+socket.on('create-room', async data => {
+  try {
+    const validatedData = validateData(CreateRoomDataSchema, data, socket);
+    if (!validatedData) return;
+
+    const { hostName } = validatedData;
+    const roomId = generateRoomId();
+    const userId = uuidv4();
+
+    const user: User = {
+      id: userId,
+      name: hostName,
+      isHost: true,
+      joinedAt: new Date(),
+    };
+
+    const room: Room = {
+      id: roomId,
+      hostId: userId,
+      hostName: hostName,
+      hostToken: uuidv4(),
+      videoType: null,
+      videoState: {
+        isPlaying: false,
+        currentTime: 0,
+        duration: 0,
+        lastUpdateTime: Date.now(),
+      },
+      users: [user],
+      createdAt: new Date(),
+    };
+
+    await redisService.rooms.createRoom(room);
+
+    socket.data.userId = userId;
+    socket.data.userName = hostName;
+    socket.data.roomId = roomId;
+
+    await socket.join(roomId);
+
+    socket.emit('room-created', { roomId, room, hostToken: room.hostToken });
+    socket.emit('room-joined', { room, user });
+    console.log(`Room ${roomId} created by ${hostName}`);
+  } catch (error) {
+    console.error('Error creating room:', error);
+    socket.emit('room-error', { error: 'Failed to create room' });
+  }
+});
+```
+
+<Tabs>
+  <Tab title="Schema Definition">
+    ```typescript types/schemas.ts:63-65
+    export const CreateRoomDataSchema = z.object({
+      hostName: UserNameSchema,
+    });
+    ```
+  </Tab>
+  
+  <Tab title="Validation Rules">
+    ```typescript types/schemas.ts:4-8
+    export const UserNameSchema = z
+      .string()
+      .min(2, 'Name must be at least 2 characters long')
+      .max(50, 'Name must be 50 characters or less')
+      .regex(/^[a-zA-Z0-9\s\-_.!?]+$/, 'Name can only contain letters, numbers, spaces, and basic punctuation');
+    ```
+  </Tab>
+</Tabs>
+
+## Redis Repositories
+
+Redis is abstracted through repository classes that handle data persistence:
+
+### RoomRepository
+
+Manages room state with 24-hour TTL:
+
+```typescript backend/redis/room-handler.ts:14-41
+async createRoom(room: Room): Promise<void> {
+  await redis.setex(`room:${room.id}`, 86400, JSON.stringify(room)); // 24 hours TTL
+  await redis.sadd('active-rooms', room.id);
+}
+
+async getRoom(roomId: string): Promise<Room | null> {
+  const roomData = await redis.get(`room:${roomId}`);
+  if (!roomData) return null;
+
+  const room = JSON.parse(roomData) as Room;
+  // Convert date strings back to Date objects
+  room.createdAt = new Date(room.createdAt);
+  room.users = room.users.map(user => ({
+    ...user,
+    joinedAt: new Date(user.joinedAt),
+  }));
+
+  return room;
+}
+
+async updateRoom(roomId: string, room: Room): Promise<void> {
+  await redis.setex(`room:${roomId}`, 86400, JSON.stringify(room));
+}
+
+async deleteRoom(roomId: string): Promise<void> {
+  await redis.del(`room:${roomId}`);
+  await redis.srem('active-rooms', roomId);
+}
+```
+
+<AccordionGroup>
+  <Accordion title="Video State Management">
+    ```typescript backend/redis/room-handler.ts:79-101
+    async updateVideoState(roomId: string, videoState: VideoState): Promise<void> {
+      const room = await this.getRoom(roomId);
+      if (!room) throw new Error('Room not found');
+
+      room.videoState = videoState;
+      await this.updateRoom(roomId, room);
+    }
+
+    async setVideoUrl(roomId: string, videoUrl: string, videoType: 'youtube'): Promise<void> {
+      const room = await this.getRoom(roomId);
+      if (!room) throw new Error('Room not found');
+
+      room.videoUrl = videoUrl;
+      room.videoType = videoType;
+      // Reset video state when new video is set
+      room.videoState = {
+        isPlaying: false,
+        currentTime: 0,
+        duration: 0,
+        lastUpdateTime: Date.now(),
+      };
+
+      await this.updateRoom(roomId, room);
+    }
+    ```
+  </Accordion>
+
+  <Accordion title="User Management">
+    ```typescript backend/redis/room-handler.ts:47-76
+    async addUserToRoom(roomId: string, user: User): Promise<void> {
+      const room = await this.getRoom(roomId);
+      if (!room) throw new Error('Room not found');
+
+      // Remove user if already exists (rejoin case)
+      room.users = room.users.filter(u => u.id !== user.id);
+      room.users.push(user);
+
+      await this.updateRoom(roomId, room);
+    }
+
+    async removeUserFromRoom(roomId: string, userId: string): Promise<void> {
+      const room = await this.getRoom(roomId);
+      if (!room) return;
+
+      room.users = room.users.filter(u => u.id !== userId);
+
+      // If no users left, delete the room
+      if (room.users.length === 0) {
+        await this.deleteRoom(roomId);
+      } else {
+        // If host left, assign new host
+        if (room.hostId === userId && room.users.length > 0) {
+          const newHost = room.users[0];
+          room.hostId = newHost.id;
+          room.hostName = newHost.name;
+          newHost.isHost = true;
+        }
+        await this.updateRoom(roomId, room);
+      }
+    }
+    ```
+  </Accordion>
+</AccordionGroup>
+
+### ChatRepository
+
+Stores last 20 messages using Redis lists:
+
+```typescript backend/redis/chat-handler.ts:14-30
+async addChatMessage(roomId: string, message: ChatMessage): Promise<void> {
+  const key = `chat:${roomId}`;
+  await redis.lpush(key, JSON.stringify(message));
+  await redis.ltrim(key, 0, 19); // Keep only last 20 messages
+  await redis.expire(key, 86400); // 24 hours TTL
+}
+
+async getChatMessages(roomId: string, limit: number = 20): Promise<ChatMessage[]> {
+  const messages = await redis.lrange(`chat:${roomId}`, 0, limit - 1);
+  return messages
+    .map(msg => {
+      const parsed = JSON.parse(msg) as ChatMessage;
+      parsed.timestamp = new Date(parsed.timestamp);
+      return parsed;
+    })
+    .reverse(); // Reverse to get chronological order
+}
+```
+
+<Note>
+  Messages are stored in reverse chronological order (newest first) using `lpush`, then reversed when retrieved to display chronologically.
+</Note>
+
+## Rate Limiting
+
+The application implements two layers of rate limiting:
+
+### HTTP Rate Limiting
+
+```typescript backend/rate-limit.ts:9-67
+const RATE_LIMIT_WINDOW_MS = parseInt(process.env.RATE_LIMIT_WINDOW_MS || '60000', 10); // 1 minute
+const RATE_LIMIT_MAX_REQUESTS = parseInt(process.env.RATE_LIMIT_MAX_REQUESTS || '360', 10);
+
+// Lua script: increment key, set expiry on first request in window, return current count
+const LUA_SCRIPT = `
+  local current = redis.call('INCR', KEYS[1])
+  if current == 1 then
+    redis.call('PEXPIRE', KEYS[1], ARGV[1])
+  end
+  return current
+`;
+
+async function checkRedisRateLimit(ip: string): Promise<{ allowed: boolean; remaining: number }> {
+  const key = `${RATE_LIMIT_KEY_PREFIX}${ip}`;
+  const windowMs = RATE_LIMIT_WINDOW_MS.toString();
+  const current = (await redis.eval(LUA_SCRIPT, 1, key, windowMs)) as number;
+  const allowed = current <= RATE_LIMIT_MAX_REQUESTS;
+  const remaining = Math.max(0, RATE_LIMIT_MAX_REQUESTS - current);
+  return { allowed, remaining };
+}
+
+export async function checkRateLimit(req: IncomingMessage): Promise<{ allowed: boolean; remaining: number }> {
+  const ip = getClientIp(req);
+  try {
+    return await checkRedisRateLimit(ip);
+  } catch {
+    return await checkMemoryRateLimit(ip); // Fallback to in-memory
+  }
+}
+```
+
+### Socket Connection Limiting
+
+```typescript backend/rate-limit.ts:86-111
+const SOCKET_CONN_MAX_PER_IP = parseInt(process.env.RATE_LIMIT_SOCKET_MAX_PER_IP || '10', 10);
+
+export async function checkSocketConnectionAllowed(ip: string): Promise<{ allowed: boolean }> {
+  const key = `${SOCKET_KEY_PREFIX}${ip}`;
+  try {
+    const current = await redis.incr(key);
+    if (current === 1) await redis.expire(key, 3600); // 1h TTL
+    return { allowed: current <= SOCKET_CONN_MAX_PER_IP };
+  } catch {
+    return { allowed: true }; // allow on Redis failure to avoid blocking all connections
+  }
+}
+
+export async function decrementSocketConnection(ip: string): Promise<void> {
+  const key = `${SOCKET_KEY_PREFIX}${ip}`;
+  try {
+    await redis.decr(key);
+  } catch {
+    // ignore
+  }
+}
+```
+
+<Tabs>
+  <Tab title="HTTP Limits">
+    **Default Configuration:**
+    - 360 requests per minute per IP
+    - Enforced in production only
+    - Headers: `X-RateLimit-Limit`, `X-RateLimit-Remaining`, `Retry-After`
+    
+    **Response:**
+    ```
+    HTTP/1.1 429 Too Many Requests
+    X-RateLimit-Limit: 360
+    X-RateLimit-Remaining: 0
+    Retry-After: 60
+    ```
+  </Tab>
+  
+  <Tab title="Socket Limits">
+    **Default Configuration:**
+    - 10 concurrent connections per IP
+    - Applies in all environments
+    - Connection rejected immediately if exceeded
+    
+    **Behavior:**
+    - Counter incremented on connection
+    - Counter decremented on disconnect
+    - 1-hour TTL prevents leaked counters
+  </Tab>
+</Tabs>
+
+## Video Control Events
+
+Host-only actions are enforced server-side:
+
+```typescript socket/video-handler.ts:45-82
+socket.on('play-video', async data => {
+  try {
+    const validatedData = validateData(VideoControlDataSchema, data, socket);
+    if (!validatedData) return;
+
+    const { roomId, currentTime } = validatedData;
+    const room = await redisService.rooms.getRoom(roomId);
+    if (!room) {
+      socket.emit('room-error', { error: 'Room not found' });
+      return;
+    }
+
+    const currentUser = room.users.find(u => u.id === socket.data.userId);
+    if (!currentUser?.isHost) {
+      socket.emit('error', { error: 'Only hosts can control the video' });
+      return;
+    }
+
+    const videoState = {
+      isPlaying: true,
+      currentTime,
+      duration: room.videoState.duration,
+      lastUpdateTime: Date.now(),
+    };
+
+    await redisService.rooms.updateVideoState(roomId, videoState);
+
+    socket.to(roomId).emit('video-played', {
+      currentTime,
+      timestamp: videoState.lastUpdateTime,
+    });
+
+    console.log(`Video played in room ${roomId} at ${currentTime}s`);
+  } catch (error) {
+    console.error('Error playing video:', error);
+    socket.emit('error', { error: 'Failed to play video' });
+  }
+});
+```
+
+<Warning>
+  All video control actions (play, pause, seek) require the user to be a host. This is checked server-side to prevent unauthorized control attempts.
+</Warning>
+
+## Host Sync Mechanism
+
+Hosts send periodic sync checks every 5 seconds:
+
+```typescript socket/video-handler.ts:164-196
+socket.on('sync-check', async data => {
+  try {
+    const validatedData = validateData(SyncCheckDataSchema, data, socket);
+    if (!validatedData) return;
+
+    const { roomId, currentTime, isPlaying, timestamp } = validatedData;
+
+    if (!socket.data.userId) {
+      socket.emit('error', { error: 'Not authenticated' });
+      return;
+    }
+
+    const room = await redisService.rooms.getRoom(roomId);
+    if (!room) {
+      socket.emit('room-error', { error: 'Room not found' });
+      return;
+    }
+
+    const currentUser = room.users.find(u => u.id === socket.data.userId);
+    if (!currentUser?.isHost) {
+      socket.emit('error', { error: 'Only hosts can send sync checks' });
+      return;
+    }
+
+    // Broadcast sync update to all other users
+    socket.to(roomId).emit('sync-update', { currentTime, isPlaying, timestamp });
+
+    console.log(`Sync check sent in room ${roomId}: ${currentTime.toFixed(2)}s, playing: ${isPlaying}`);
+  } catch (error) {
+    console.error('Error sending sync check:', error);
+    socket.emit('error', { error: 'Failed to send sync check' });
+  }
+});
+```
+
+## Next Steps
+
+<CardGroup cols={2}>
+  <Card title="Frontend Architecture" icon="react" href="/architecture/frontend">
+    Learn how the React frontend consumes Socket.IO events
+  </Card>
+  
+  <Card title="Real-Time Sync" icon="bolt" href="/architecture/real-time-sync">
+    Understand the video synchronization algorithm
+  </Card>
+</CardGroup>
